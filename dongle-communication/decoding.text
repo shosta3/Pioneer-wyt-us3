@@ -12,7 +12,7 @@ Heat transmission from esp and probable values /uses
 0x14	
 0x8A	
 0x0A	0A on esp trasnmit -0c on heatpump transmit -80 on reciever
-0x0A	0a on esp transmit echoed by heatpump reply 0c heatpump transmit echoed by esp reply
+0x0A	0a on esp transmit echoed by heatpump reply -0c heatpump transmit echoed by esp reply
 0x00	(static)
 0xDF	
 0x00	
