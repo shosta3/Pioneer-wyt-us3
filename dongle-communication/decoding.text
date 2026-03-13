@@ -5,8 +5,8 @@ Heat transmission from esp and probable values /uses
 0x01	(static)
 0x01	
 0x21	21 -sender 23-reciever
-0x11	command name for 21 blank for 23
-0x00	command received for 23 blank for 21
+0x11	sequence for 21 blank for 23
+0x00	sequence received for 23 blank for 21
 0x00	(static)
 0x24	??  For 21 0c for reciever
 0x14	
