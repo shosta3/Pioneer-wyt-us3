@@ -96,7 +96,7 @@ H_SWING_OPTIONS = [
 
 SLEEP_OPTIONS = ["Off", "Standard", "Aged", "Child"]
 
-CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend({
+CONFIG_SCHEMA = cv.ALL(climate.CLIMATE_SCHEMA).extend({
     cv.GenerateID(): cv.declare_id(AcController),
     cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
 
