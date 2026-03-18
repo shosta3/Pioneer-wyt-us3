@@ -18,7 +18,7 @@ AcSwingSelect = ac_ns.class_("AcSwingSelect",  select.Select,  cg.Component)
 AcSwitch      = ac_ns.class_("AcSwitch",       switch.Switch,  cg.Component)
 AcSleepSelect = ac_ns.class_("AcSleepSelect",  select.Select,  cg.Component)
 
-AcSwitchType = ac_ns.enum("AcSwitch::SwitchType")
+AcSwitchType = ac_ns.class_("AcSwitch").enum("SwitchKind")
 SWITCH_TYPES = {
     "eco":     AcSwitchType.KIND_ECO,
     "display": AcSwitchType.KIND_DISPLAY,
