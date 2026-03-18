@@ -87,7 +87,7 @@ def _pct_sensor():
 
 # ── CONFIG_SCHEMA — ESPHome looks for this by name ───────────────────────────
 CONFIG_SCHEMA = cv.All(
-    climate.CLIMATE_SCHEMA.extend({
+    climate.climate_schema.extend({
         cv.GenerateID(): cv.declare_id(AcController),
         cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
 
