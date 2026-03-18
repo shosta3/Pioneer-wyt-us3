@@ -7,7 +7,6 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/switch/switch.h"
 #include "esphome/components/select/select.h"
-#include "esphome/components/number/number.h"
 
 #include <vector>
 #include <queue>
