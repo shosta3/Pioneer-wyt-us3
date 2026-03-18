@@ -179,7 +179,8 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint16_t crc16_xmodem(const uint8_t *data, size_t len);
 
   std::vector<uint8_t> build_frame(const std::vector<uint8_t> &payload);
-  std::vector<uint8_t> build_ack_frame(uint8_t seq);
+  std::vector<uint8_t> build_ack_frame(uint8_t seq, uint8_t dev_id = DEV_ID);
+  void send_poll_frame();
   void enqueue_command(const std::vector<uint8_t> &payload);
 
   void process_rx_byte(uint8_t byte);
@@ -199,7 +200,9 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint8_t  tx_seq_{0x01};
   bool     waiting_for_ack_{false};
   uint32_t last_tx_ms_{0};
-  static const uint32_t ACK_TIMEOUT_MS = 500;
+  uint32_t last_poll_ms_{0};
+  static const uint32_t ACK_TIMEOUT_MS  = 500;
+  static const uint32_t POLL_INTERVAL_MS = 28000;  // ~30s poll to keep indoor in normal mode
 
   std::queue<PendingCommand>   tx_queue_;
   std::vector<uint8_t>         rx_buf_;

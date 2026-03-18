@@ -44,12 +44,12 @@ std::vector<uint8_t> AcController::build_frame(const std::vector<uint8_t> &paylo
   return frame;
 }
 
-std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq) {
+std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq, uint8_t dev_id) {
   // ACK frame type=0x23, seq1=0x00, seq2=echoed seq, payload=0x80 0x0A
   std::vector<uint8_t> frame;
   frame.push_back(FRAME_HEADER);
   frame.push_back(BUS_ID);
-  frame.push_back(DEV_ID);
+  frame.push_back(dev_id);
   frame.push_back(TYPE_ACK);
   frame.push_back(0x00);
   frame.push_back(seq);
@@ -246,8 +246,8 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
   uint8_t seq = frame[4];
   ESP_LOGV(TAG, "RX CMD seq=%02X len=%d", seq, (int) frame.size());
 
-  // ACK immediately
-  send_frame(build_ack_frame(seq));
+  // ACK immediately — mirror the device ID from the incoming frame
+  send_frame(build_ack_frame(seq, frame[2]));
 
   const uint8_t *payload = frame.data() + 10;
   size_t plen = frame.size() - 10;
@@ -567,6 +567,42 @@ climate::ClimateTraits AcController::traits() {
   return t;
 }
 
+
+// ── Periodic poll frame ───────────────────────────────────────────────────────
+// Mimics the real controller's ~30s heartbeat poll to keep the indoor unit
+// in its normal low-traffic broadcast rhythm rather than "no controller" mode.
+void AcController::send_poll_frame() {
+  // A5 01 00 21 00 00 00 0C CRC1 CRC2 0C 0C
+  std::vector<uint8_t> payload = {0x0C, 0x0C};
+  uint8_t total_len = 12;
+  std::vector<uint8_t> frame;
+  frame.push_back(FRAME_HEADER);
+  frame.push_back(BUS_ID);
+  frame.push_back(0x00);       // dev_id = 0x00 (bus broadcast)
+  frame.push_back(TYPE_CMD);
+  frame.push_back(0x00);       // seq = 0x00
+  frame.push_back(0x00);
+  frame.push_back(0x00);
+  frame.push_back(total_len);
+  frame.push_back(0x00);       // CRC placeholder
+  frame.push_back(0x00);
+  frame.push_back(0x0C);
+  frame.push_back(0x0C);
+
+  uint8_t crc_buf[10] = {
+    frame[0], frame[1], frame[2], frame[3],
+    frame[4], frame[5], frame[6], frame[7],
+    0x0C, 0x0C
+  };
+  uint16_t crc = crc16_xmodem(crc_buf, 10);
+  frame[8] = (crc >> 8) & 0xFF;
+  frame[9] = crc & 0xFF;
+
+  ESP_LOGD(TAG, "Sending poll frame");
+  send_frame(frame);
+  last_poll_ms_ = millis();
+}
+
 // ── ESPHome lifecycle ─────────────────────────────────────────────────────────
 void AcController::setup() {
   ESP_LOGI(TAG, "AC Controller setup");
@@ -584,6 +620,11 @@ void AcController::loop() {
     process_rx_byte(b);
   }
   maybe_send_next_command();
+
+  // Send periodic poll to keep indoor unit in normal broadcast mode
+  if (millis() - last_poll_ms_ > POLL_INTERVAL_MS) {
+    send_poll_frame();
+  }
 }
 
 void AcController::dump_config() {
