@@ -37,7 +37,7 @@ CONF_DISPLAY_SWITCH      = "display"
 CONF_BEEP_SWITCH         = "beep"
 CONF_SLEEP_SELECT        = "sleep_mode"
 
-# ── Swing / sleep options ─────────────────────────────────────────────────────
+# ── Swing / sleep option lists ────────────────────────────────────────────────
 V_SWING_OPTIONS = [
     "Swing Up-Down", "Swing Up", "Swing Down",
     "Fixed Up", "Fixed Above-Up", "Fixed Middle", "Fixed Above-Down", "Fixed Down",
@@ -85,42 +85,40 @@ def _pct_sensor():
         state_class="measurement",
     )
 
-# ── CONFIG_SCHEMA — ESPHome looks for this by name ───────────────────────────
+# ── Sub-entity schemas ────────────────────────────────────────────────────────
+# Use basic cv.Schema with just name + ID rather than SELECT_SCHEMA/SWITCH_SCHEMA
+# which have changed between ESPHome versions.
+def _named_entity_schema(class_):
+    return cv.Schema({
+        cv.GenerateID(): cv.declare_id(class_),
+        cv.Required(CONF_NAME): cv.string,
+    })
+
+# ── CONFIG_SCHEMA ─────────────────────────────────────────────────────────────
+# climate.climate_schema(Class) is the correct modern API (replaces CLIMATE_SCHEMA)
 CONFIG_SCHEMA = cv.All(
-    climate.climate_schema.extend({
-        cv.GenerateID(): cv.declare_id(AcController),
+    climate.climate_schema(AcController)
+    .extend({
         cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
 
-        # Sensors (all optional)
+        # Optional sensors
         cv.Optional(CONF_ROOM_TEMP_SENSOR):    _temp_f_sensor(),
         cv.Optional(CONF_INDOOR_COIL_SENSOR):  _temp_f_sensor(),
         cv.Optional(CONF_OUTDOOR_COIL_SENSOR): _temp_c_sensor(),
         cv.Optional(CONF_COMP_FREQ_SENSOR):    _freq_sensor(),
         cv.Optional(CONF_FAN_RPM_SENSOR):      _pct_sensor(),
 
-        # Swing selects (optional)
-        cv.Optional(CONF_V_SWING_SELECT): select.SELECT_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSwingSelect),
-        }),
-        cv.Optional(CONF_H_SWING_SELECT): select.SELECT_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSwingSelect),
-        }),
+        # Optional swing selects
+        cv.Optional(CONF_V_SWING_SELECT): _named_entity_schema(AcSwingSelect),
+        cv.Optional(CONF_H_SWING_SELECT): _named_entity_schema(AcSwingSelect),
 
-        # Sleep select (optional)
-        cv.Optional(CONF_SLEEP_SELECT): select.SELECT_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSleepSelect),
-        }),
+        # Optional sleep select
+        cv.Optional(CONF_SLEEP_SELECT): _named_entity_schema(AcSleepSelect),
 
-        # Switches (optional)
-        cv.Optional(CONF_ECO_SWITCH):     switch.SWITCH_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSwitch),
-        }),
-        cv.Optional(CONF_DISPLAY_SWITCH): switch.SWITCH_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSwitch),
-        }),
-        cv.Optional(CONF_BEEP_SWITCH):    switch.SWITCH_SCHEMA.extend({
-            cv.GenerateID(): cv.declare_id(AcSwitch),
-        }),
+        # Optional switches
+        cv.Optional(CONF_ECO_SWITCH):     _named_entity_schema(AcSwitch),
+        cv.Optional(CONF_DISPLAY_SWITCH): _named_entity_schema(AcSwitch),
+        cv.Optional(CONF_BEEP_SWITCH):    _named_entity_schema(AcSwitch),
     })
     .extend(uart.UART_DEVICE_SCHEMA)
     .extend(cv.COMPONENT_SCHEMA)
@@ -154,31 +152,35 @@ async def to_code(config):
         sens = await sensor.new_sensor(config[CONF_FAN_RPM_SENSOR])
         cg.add(var.set_fan_rpm_sensor(sens))
 
-    # ── Swing selects ─────────────────────────────────────────────────────────
+    # ── Vertical swing select ─────────────────────────────────────────────────
     if CONF_V_SWING_SELECT in config:
-        sel = cg.new_Pvariable(config[CONF_V_SWING_SELECT][CONF_ID])
-        await cg.register_component(sel, config[CONF_V_SWING_SELECT])
-        await select.register_select(sel, config[CONF_V_SWING_SELECT],
-                                     options=V_SWING_OPTIONS)
+        conf = config[CONF_V_SWING_SELECT]
+        sel = cg.new_Pvariable(conf[CONF_ID])
+        await cg.register_component(sel, conf)
+        cg.add(sel.set_name(conf[CONF_NAME]))
+        cg.add(sel.traits.set_options(V_SWING_OPTIONS))
         cg.add(sel.set_is_vertical(True))
         cg.add(sel.set_parent(var))
         cg.add(var.set_v_swing_select(sel))
 
+    # ── Horizontal swing select ───────────────────────────────────────────────
     if CONF_H_SWING_SELECT in config:
-        sel = cg.new_Pvariable(config[CONF_H_SWING_SELECT][CONF_ID])
-        await cg.register_component(sel, config[CONF_H_SWING_SELECT])
-        await select.register_select(sel, config[CONF_H_SWING_SELECT],
-                                     options=H_SWING_OPTIONS)
+        conf = config[CONF_H_SWING_SELECT]
+        sel = cg.new_Pvariable(conf[CONF_ID])
+        await cg.register_component(sel, conf)
+        cg.add(sel.set_name(conf[CONF_NAME]))
+        cg.add(sel.traits.set_options(H_SWING_OPTIONS))
         cg.add(sel.set_is_vertical(False))
         cg.add(sel.set_parent(var))
         cg.add(var.set_h_swing_select(sel))
 
-    # ── Sleep select ──────────────────────────────────────────────────────────
+    # ── Sleep mode select ─────────────────────────────────────────────────────
     if CONF_SLEEP_SELECT in config:
-        sel = cg.new_Pvariable(config[CONF_SLEEP_SELECT][CONF_ID])
-        await cg.register_component(sel, config[CONF_SLEEP_SELECT])
-        await select.register_select(sel, config[CONF_SLEEP_SELECT],
-                                     options=SLEEP_OPTIONS)
+        conf = config[CONF_SLEEP_SELECT]
+        sel = cg.new_Pvariable(conf[CONF_ID])
+        await cg.register_component(sel, conf)
+        cg.add(sel.set_name(conf[CONF_NAME]))
+        cg.add(sel.traits.set_options(SLEEP_OPTIONS))
         cg.add(sel.set_parent(var))
         cg.add(var.set_sleep_select(sel))
 
@@ -189,9 +191,10 @@ async def to_code(config):
         (CONF_BEEP_SWITCH,    "set_beep_switch",    "beep"),
     ]:
         if conf_key in config:
-            sw = cg.new_Pvariable(config[conf_key][CONF_ID])
-            await cg.register_component(sw, config[conf_key])
-            await switch.register_switch(sw, config[conf_key])
+            conf = config[conf_key]
+            sw = cg.new_Pvariable(conf[CONF_ID])
+            await cg.register_component(sw, conf)
+            cg.add(sw.set_name(conf[CONF_NAME]))
             cg.add(sw.set_type(SWITCH_TYPES[sw_type]))
             cg.add(sw.set_parent(var))
             cg.add(getattr(var, setter)(sw))
