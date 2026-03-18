@@ -10,6 +10,7 @@ from esphome.const import (
 DEPENDENCIES = ["uart", "climate"]
 AUTO_LOAD = ["sensor", "switch", "select"]
 
+
 ac_ns = cg.esphome_ns.namespace("ac_controller")
 
 AcController  = ac_ns.class_("AcController",  climate.Climate, uart.UARTDevice, cg.Component)
@@ -19,9 +20,9 @@ AcSleepSelect = ac_ns.class_("AcSleepSelect",  select.Select,  cg.Component)
 
 AcSwitchType = ac_ns.enum("AcSwitch::SwitchType")
 SWITCH_TYPES = {
-    "eco":     AcSwitchType.ECO,
-    "display": AcSwitchType.DISPLAY,
-    "beep":    AcSwitchType.BEEP,
+    "eco":     AcSwitchType.KIND_ECO,
+    "display": AcSwitchType.KIND_DISPLAY,
+    "beep":    AcSwitchType.KIND_BEEP,
 }
 
 # ── Config keys ───────────────────────────────────────────────────────────────
@@ -195,6 +196,6 @@ async def to_code(config):
             sw = cg.new_Pvariable(conf[CONF_ID])
             await cg.register_component(sw, conf)
             cg.add(sw.set_name(conf[CONF_NAME]))
-            cg.add(sw.set_type(SWITCH_TYPES[sw_type]))
+            cg.add(sw.set_kind(SWITCH_TYPES[sw_type]))
             cg.add(sw.set_parent(var))
             cg.add(getattr(var, setter)(sw))
