@@ -539,7 +539,7 @@ void AcController::control(const climate::ClimateCall &call) {
 // ── Climate traits ────────────────────────────────────────────────────────────
 climate::ClimateTraits AcController::traits() {
   auto t = climate::ClimateTraits();
-  t.add_supported_feature(climate::ClimateTraitFeatures::CLIMATE_TRAIT_CURRENT_TEMPERATURE);
+  t.set_supports_current_temperature(true);
   t.set_supported_modes({
     climate::CLIMATE_MODE_OFF,
     climate::CLIMATE_MODE_COOL,
