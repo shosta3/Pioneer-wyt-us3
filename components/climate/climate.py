@@ -96,7 +96,7 @@ H_SWING_OPTIONS = [
 
 SLEEP_OPTIONS = ["Off", "Standard", "Aged", "Child"]
 
-CONFIG_SCHEMA = cv.ALL(climate.CLIMATE_SCHEMA.extend({
+CONFIG_SCHEMA = climate.CLIMATE_SCHEMA.extend({
     cv.GenerateID(): cv.declare_id(AcController),
     cv.GenerateID(CONF_UART_ID): cv.use_id(uart.UARTComponent),
 
@@ -128,7 +128,7 @@ CONFIG_SCHEMA = cv.ALL(climate.CLIMATE_SCHEMA.extend({
     cv.Optional(CONF_BEEP_SWITCH): switch.SWITCH_SCHEMA.extend({
         cv.GenerateID(): cv.declare_id(AcSwitch),
     }),
-}).extend(uart.UART_DEVICE_SCHEMA).extend(cv.COMPONENT_SCHEMA))
+}).extend(uart.UART_DEVICE_SCHEMA).extend(cv.COMPONENT_SCHEMA)
 
 
 async def to_code(config):
