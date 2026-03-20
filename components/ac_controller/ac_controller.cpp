@@ -385,7 +385,7 @@ void AcController::process_rx_byte(uint8_t byte) {
   if (rx_buf_.size() < 8) return;
 
   uint8_t expected_len = rx_buf_[7];
-  if (expected_len < 10 || expected_len > 200) {
+  if (expected_len < 10 || expected_len > 250) {
     rx_buf_.clear(); return;
   }
   if (rx_buf_.size() < (size_t) expected_len) return;
