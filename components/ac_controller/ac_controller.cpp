@@ -198,7 +198,7 @@ void AcController::maybe_send_next_command() {
 //   1. [00 00 01] dev=00           — identity query (x4, ignored response)
 //   2. [0B 0B FF FF] dev=01        — announce as controller (x2, wait [80 0B])
 //   3. [0B 0B 03 05] dev=00 x2     — bus-level handshake
-//   4. [28 28 00 01 ...] dev=00    — power state sync
+//   4. [28 28 00 01 ...] dev=00    — indoor sends this TO us (power state push), we ACK
 //   5. [15 15 <ts> FC] dev=00      — timestamp frame (no ack expected)
 //   After: indoor sends 26 26 / 10 10 / 0C 0C — respond to each
 // ─────────────────────────────────────────────────────────────────────────────
@@ -311,12 +311,11 @@ void AcController::run_handshake() {
       break;
 
     case HS_ANNOUNCE_2:
+      // [28 28] power sync is sent BY THE INDOOR UNIT to us — we just receive and ACK it.
+      // Skip straight to the fourth identity query.
       if (!hs_waiting_ack_) {
-        // Send power state sync: [28 28 00 01 <power> 00 00 00 00]
-        // reg 0x01 = power state using 28 28 prefix (WiFi module's command prefix)
-        uint8_t pwr = power_ ? 0x01 : 0x00;
-        send_hs({0x28, 0x28, 0x00, 0x01, pwr, 0x00, 0x00, 0x00}, DEV_HEARTBEAT);
-        hs_state_ = HS_POWER_SYNC;
+        send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
+        hs_state_ = HS_IDENTITY_4;
       } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
         ESP_LOGW(TAG, "HS announce_2 timeout, retrying");
         hs_state_ = HS_IDLE;
@@ -324,13 +323,9 @@ void AcController::run_handshake() {
       break;
 
     case HS_POWER_SYNC:
-      if (!hs_waiting_ack_) {
-        send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
-        hs_state_ = HS_IDENTITY_4;
-      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "HS power_sync timeout, retrying");
-        hs_state_ = HS_IDLE;
-      }
+      // Unused — falls through to identity_4 immediately
+      hs_state_ = HS_IDENTITY_4;
+      hs_waiting_ack_ = false;
       break;
 
     case HS_IDENTITY_4:
@@ -459,6 +454,27 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
     if (p0 == 0x26 && p1 == 0x26) {
       // [26 26] — no response needed
       ESP_LOGD(TAG, "RX 26 26 bus announce");
+      return;
+    }
+
+    if (p0 == 0x28 && p1 == 0x28) {
+      // [28 28] power state push from indoor — ACK with [80 28]
+      ESP_LOGD(TAG, "RX 28 28 power sync from indoor");
+      uint8_t ack_buf[12];
+      ack_buf[0] = FRAME_HEADER; ack_buf[1] = BUS_ID; ack_buf[2] = DEV_HEARTBEAT;
+      ack_buf[3] = TYPE_ACK; ack_buf[4] = 0x00; ack_buf[5] = seq;
+      ack_buf[6] = 0x00; ack_buf[7] = 12;
+      ack_buf[8] = 0x00; ack_buf[9] = 0x00;
+      ack_buf[10] = 0x80; ack_buf[11] = 0x28;
+      uint8_t ci[10] = {ack_buf[0],ack_buf[1],ack_buf[2],ack_buf[3],
+                        ack_buf[4],ack_buf[5],ack_buf[6],ack_buf[7],0x80,0x28};
+      uint16_t crc = crc16_xmodem(ci, 10);
+      ack_buf[8] = (crc >> 8) & 0xFF; ack_buf[9] = crc & 0xFF;
+      write_array(ack_buf, 12);
+      // Also advance handshake if we're waiting for this in ANNOUNCE_2 state
+      if (hs_state_ != HS_COMPLETE) {
+        hs_waiting_ack_ = false;
+      }
       return;
     }
 
@@ -740,10 +756,20 @@ void AcController::control(const climate::ClimateCall &call) {
       TlvEntry e; e.bank=0x00; e.reg=REG_POWER; e.value=(np?1:0); e.size=1;
       entries.push_back(e);
       power_ = np;
-      // When powering on, send Eco state together (matches observed WiFi module behaviour)
       if (np) {
+        // Send Eco together on power-on (matches WiFi module behaviour)
         TlvEntry e2; e2.bank=0x00; e2.reg=REG_ECO; e2.value=(eco_?1:0); e2.size=1;
         entries.push_back(e2);
+        // Send VSwing to open the louvre — unit parks at 0x08 when off.
+        // If user hasn't set a swing preference keep middle fixed position.
+        uint8_t target_vswing = (v_swing_ == 0x08) ? VSWING_FIX_MID : v_swing_;
+        TlvEntry e3; e3.bank=0x00; e3.reg=REG_V_SWING; e3.value=target_vswing; e3.size=1;
+        entries.push_back(e3);
+        v_swing_ = target_vswing;
+      } else {
+        // On power-off, park the louvre
+        v_swing_ = 0x08;
+        h_swing_ = 0x08;
       }
     }
     if (np) {

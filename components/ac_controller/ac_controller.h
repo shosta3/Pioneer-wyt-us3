@@ -109,7 +109,7 @@ enum HandshakeState {
   HS_IDENTITY_3,      // sent [00 00 01] third time
   HS_WAIT_REANNOUNCE, // waiting ~5s before second announce
   HS_ANNOUNCE_2,      // sent [0B 0B FF FF] dev=01 second time
-  HS_POWER_SYNC,      // sent [28 28 00 01 ...] power state
+  HS_POWER_SYNC,      // unused — [28 28] is sent BY indoor to us, not the other way
   HS_IDENTITY_4,      // sent [00 00 01] fourth time
   HS_TIMESTAMP,       // sent [15 15 ...] timestamp frame
   HS_COMPLETE,        // handshake done, normal operation
