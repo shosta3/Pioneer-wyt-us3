@@ -71,11 +71,11 @@ static const uint8_t FAN_HIGH     = 0x06;
 static const uint8_t FAN_STRONG   = 0x07;
 
 // ── Mode values ───────────────────────────────────────────────────────────────
-static const uint8_t MODE_FAN_ONLY = 0x00;
-static const uint8_t MODE_DRY      = 0x01;
-static const uint8_t MODE_AUTO     = 0x02;
-static const uint8_t MODE_HEAT     = 0x03;
-static const uint8_t MODE_COOL     = 0x04;
+static const uint8_t MODE_AUTO     = 0x00;
+static const uint8_t MODE_COOL     = 0x01;
+static const uint8_t MODE_DRY      = 0x02;
+static const uint8_t MODE_FAN_ONLY = 0x03;
+static const uint8_t MODE_HEAT     = 0x04;
 
 // ── V-Swing values ────────────────────────────────────────────────────────────
 static const uint8_t VSWING_UPDOWN      = 0x01;
@@ -272,6 +272,7 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint8_t fan_rpm_pct_{0};
 
   bool    state_received_{false};
+  bool    pending_mode_followup_{false};
 
   // ── Sub-components ────────────────────────────────────────────────────────
   sensor::Sensor  *room_temp_sensor_{nullptr};

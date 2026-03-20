@@ -640,6 +640,8 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         break;
       }
       case REG_COMP_FREQ:
+        // reg 0x09 — pipe/refrigerant temperature in °F, not compressor Hz
+        // Values: ~96-106°F at rest, varies during operation
         comp_freq_ = (uint8_t) e.value;
         if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_freq_);
         break;
@@ -757,17 +759,17 @@ void AcController::control(const climate::ClimateCall &call) {
       entries.push_back(e);
       power_ = np;
       if (np) {
-        // Send Eco together on power-on (matches WiFi module behaviour)
+        // Send Eco and VSwing with power-on frame
         TlvEntry e2; e2.bank=0x00; e2.reg=REG_ECO; e2.value=(eco_?1:0); e2.size=1;
         entries.push_back(e2);
-        // Send VSwing to open the louvre — unit parks at 0x08 when off.
-        // If user hasn't set a swing preference keep middle fixed position.
         uint8_t target_vswing = (v_swing_ == 0x08) ? VSWING_FIX_MID : v_swing_;
         TlvEntry e3; e3.bank=0x00; e3.reg=REG_V_SWING; e3.value=target_vswing; e3.size=1;
         entries.push_back(e3);
         v_swing_ = target_vswing;
+        // The indoor unit ignores Mode when bundled in the power-on frame —
+        // it reverts to its stored mode. Queue a separate mode frame to follow.
+        pending_mode_followup_ = true;
       } else {
-        // On power-off, park the louvre
         v_swing_ = 0x08;
         h_swing_ = 0x08;
       }
@@ -783,9 +785,13 @@ void AcController::control(const climate::ClimateCall &call) {
         default: break;
       }
       if (am != mode_) {
-        TlvEntry e; e.bank=0x00; e.reg=REG_MODE; e.value=am; e.size=1;
-        entries.push_back(e);
         mode_ = am;
+        if (!pending_mode_followup_) {
+          // Not a fresh power-on — send mode change immediately
+          TlvEntry e; e.bank=0x00; e.reg=REG_MODE; e.value=am; e.size=1;
+          entries.push_back(e);
+        }
+        // If pending_mode_followup_ is set, mode will be sent as a follow-up frame
       }
     }
   }
@@ -928,6 +934,17 @@ void AcController::loop() {
 
   // Normal operation
   maybe_send_next_command();
+
+  // Send mode follow-up after power-on — indoor ignores mode bundled in power frame
+  if (pending_mode_followup_ && tx_queue_.empty() && !waiting_for_ack_) {
+    if (millis() - last_tx_ms_ > 300) {
+      ESP_LOGD(TAG, "Sending mode follow-up: 0x%02X", mode_);
+      TlvEntry e; e.bank=0x00; e.reg=REG_MODE; e.value=mode_; e.size=1;
+      std::vector<TlvEntry> v; v.push_back(e);
+      send_registers(v);
+      pending_mode_followup_ = false;
+    }
+  }
 
   // Periodic poll to maintain indoor unit's normal broadcast rhythm
   if (millis() - last_poll_ms_ > POLL_INTERVAL_MS) {
