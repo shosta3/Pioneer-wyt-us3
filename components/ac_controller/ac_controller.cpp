@@ -658,10 +658,9 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         break;
       case REG_OUTDOOR_COIL: {
         // reg 0x60 values are tenths of °F (900=90°F, 1000=100°F, 1100=110°F)
-        // Previously misinterpreted as tenths of °C which gave impossible 90-110°C
+        // Published directly in °F to match IndoorCoil sensor units
         int32_t sv = (int32_t) e.value;
-        float outdoor_f = sv / 10.0f;
-        outdoor_coil_c_ = (outdoor_f - 32.0f) / 1.8f;  // convert to °C for HA
+        outdoor_coil_c_ = sv / 10.0f;  // field name legacy; value is °F
         if (outdoor_coil_sensor_) outdoor_coil_sensor_->publish_state(outdoor_coil_c_);
         break;
       }
@@ -931,9 +930,11 @@ void AcController::loop() {
   }
 
   // Run handshake state machine until complete
+  // NOTE: Do NOT return early here — the ESPHome API task must continue
+  // running during handshake or HA will see no devices/entities.
   if (hs_state_ != HS_COMPLETE) {
     run_handshake();
-    return;  // don't process normal queue until handshake done
+    return;  // still return to avoid sending normal commands mid-handshake
   }
 
   // Normal operation
@@ -949,11 +950,9 @@ void AcController::loop() {
       pending_mode_followup_ = false;
     }
   }
-
-  // Periodic poll to maintain indoor unit's normal broadcast rhythm
-  if (millis() - last_poll_ms_ > POLL_INTERVAL_MS) {
-    send_poll_frame();
-  }
+  // NOTE: No self-initiated [0C 0C] poll here. The indoor unit sends [0C 0C]
+  // heartbeats on its own schedule and we respond to those. Sending our own
+  // duplicate polls was causing the indoor to enter degraded state.
 }
 
 void AcController::dump_config() {
