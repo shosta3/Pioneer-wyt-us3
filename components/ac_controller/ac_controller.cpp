@@ -251,13 +251,15 @@ void AcController::run_handshake() {
       break;
 
     case HS_ANNOUNCE_1:
-      if (!hs_waiting_ack_) {
-        // Got [80 0B] — send second identity query
+      // [0B 0B FF FF] sent — indoor may or may not send [80 0B].
+      // Advance on ACK OR after a short timeout — CtrlCount increment confirms registration.
+      if (!hs_waiting_ack_ || (now - hs_step_ms_ > ACK_TIMEOUT_MS)) {
+        if (hs_waiting_ack_) {
+          ESP_LOGD(TAG, "HS announce_1: no ACK but advancing (indoor may not reply)");
+        }
+        hs_waiting_ack_ = false;
         send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
         hs_state_ = HS_IDENTITY_2;
-      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "HS announce_1 timeout, retrying");
-        hs_state_ = HS_IDLE;
       }
       break;
 
@@ -311,14 +313,11 @@ void AcController::run_handshake() {
       break;
 
     case HS_ANNOUNCE_2:
-      // [28 28] power sync is sent BY THE INDOOR UNIT to us — we just receive and ACK it.
-      // Skip straight to the fourth identity query.
-      if (!hs_waiting_ack_) {
+      // [0B 0B FF FF] sent second time — advance on ACK or timeout.
+      if (!hs_waiting_ack_ || (now - hs_step_ms_ > ACK_TIMEOUT_MS)) {
+        hs_waiting_ack_ = false;
         send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
         hs_state_ = HS_IDENTITY_4;
-      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
-        ESP_LOGW(TAG, "HS announce_2 timeout, retrying");
-        hs_state_ = HS_IDLE;
       }
       break;
 
@@ -650,14 +649,19 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         if (fan_rpm_sensor_) fan_rpm_sensor_->publish_state(fan_rpm_pct_);
         break;
       case REG_INDOOR_COIL:
+        // reg 0x65 values are whole °C integers (not °F as previously assumed)
+        // 21=21°C, 46=46°C etc — confirmed against heat mode coil temperatures
         if (e.value > 0) {
-          indoor_coil_f_ = (float) e.value;
+          indoor_coil_f_ = (float) e.value;  // field name legacy, value is now °C
           if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
         }
         break;
       case REG_OUTDOOR_COIL: {
+        // reg 0x60 values are tenths of °F (900=90°F, 1000=100°F, 1100=110°F)
+        // Previously misinterpreted as tenths of °C which gave impossible 90-110°C
         int32_t sv = (int32_t) e.value;
-        outdoor_coil_c_ = sv / 10.0f;
+        float outdoor_f = sv / 10.0f;
+        outdoor_coil_c_ = (outdoor_f - 32.0f) / 1.8f;  // convert to °C for HA
         if (outdoor_coil_sensor_) outdoor_coil_sensor_->publish_state(outdoor_coil_c_);
         break;
       }

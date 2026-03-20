@@ -104,7 +104,7 @@ CONFIG_SCHEMA = cv.All(
 
         # Optional sensors
         cv.Optional(CONF_ROOM_TEMP_SENSOR):    _temp_f_sensor(),
-        cv.Optional(CONF_INDOOR_COIL_SENSOR):  _temp_f_sensor(),
+        cv.Optional(CONF_INDOOR_COIL_SENSOR):  _temp_c_sensor(),
         cv.Optional(CONF_OUTDOOR_COIL_SENSOR): _temp_c_sensor(),
         cv.Optional(CONF_COMP_FREQ_SENSOR):    _freq_sensor(),
         cv.Optional(CONF_FAN_RPM_SENSOR):      _pct_sensor(),
