@@ -43,6 +43,7 @@ static const uint8_t REG_INDOOR_COIL   = 0x65;  // special 4-byte, °F
 static const uint8_t REG_FAN_RPM       = 0x72;  // special 4-byte, %
 static const uint8_t REG_FAN_AUTO_MODE = 0x73;
 static const uint8_t REG_ECO           = 0xDF;
+static const uint8_t REG_RUN_STATE     = 0x38;
 
 static const uint8_t SENSOR_ROOM_TEMP  = 0x0D;
 static const uint8_t REG_SENSOR_MARKER = 0x5C;
@@ -50,15 +51,14 @@ static const uint8_t REG_SENSOR_MARKER = 0x5C;
 // ── Protocol constants ────────────────────────────────────────────────────────
 static const uint8_t FRAME_HEADER     = 0xA5;
 static const uint8_t BUS_ID           = 0x01;
-static const uint8_t DEV_ID           = 0x01;
+static const uint8_t DEV_NORMAL       = 0x01;  // normal addressed
+static const uint8_t DEV_HEARTBEAT    = 0x00;  // bus-level heartbeat/broadcast
 static const uint8_t TYPE_CMD         = 0x21;
 static const uint8_t TYPE_ACK         = 0x23;
 static const uint8_t PREFIX_CTRL_HI   = 0x0A;
 static const uint8_t PREFIX_CTRL_LO   = 0x0A;
 static const uint8_t PREFIX_INDOOR_HI = 0x0C;
 static const uint8_t PREFIX_INDOOR_LO = 0x0C;
-static const uint8_t ACK_PAYLOAD_CTRL = 0x0C;
-static const uint8_t ACK_PAYLOAD_IN   = 0x0A;
 
 // ── Fan speed values ──────────────────────────────────────────────────────────
 static const uint8_t FAN_AUTO     = 0x00;
@@ -88,17 +88,34 @@ static const uint8_t VSWING_FIX_ABOVEDN = 0x0C;
 static const uint8_t VSWING_FIX_DOWN    = 0x0D;
 
 // ── H-Swing values ────────────────────────────────────────────────────────────
-static const uint8_t HSWING_LR           = 0x01;
-static const uint8_t HSWING_LEFT         = 0x02;
-static const uint8_t HSWING_CENTER       = 0x03;
-static const uint8_t HSWING_RIGHT        = 0x04;
-static const uint8_t HSWING_FIX_LEFT     = 0x09;
-static const uint8_t HSWING_FIX_ABITLEFT = 0x0A;
-static const uint8_t HSWING_FIX_CENTER   = 0x0B;
+static const uint8_t HSWING_LR            = 0x01;
+static const uint8_t HSWING_LEFT          = 0x02;
+static const uint8_t HSWING_CENTER        = 0x03;
+static const uint8_t HSWING_RIGHT         = 0x04;
+static const uint8_t HSWING_FIX_LEFT      = 0x09;
+static const uint8_t HSWING_FIX_ABITLEFT  = 0x0A;
+static const uint8_t HSWING_FIX_CENTER    = 0x0B;
 static const uint8_t HSWING_FIX_ABITRIGHT = 0x0C;
-static const uint8_t HSWING_FIX_RIGHT    = 0x0D;
+static const uint8_t HSWING_FIX_RIGHT     = 0x0D;
 
-// ── Helper string functions (declared here, defined in .cpp) ──────────────────
+// ── Handshake states ──────────────────────────────────────────────────────────
+enum HandshakeState {
+  HS_IDLE,            // not yet started
+  HS_IDENTITY_1,      // sent [00 00 01], waiting for response
+  HS_ANNOUNCE_1,      // sent [0B 0B FF FF] dev=01, waiting for [80 0B]
+  HS_IDENTITY_2,      // sent [00 00 01] again
+  HS_BUS_HANDSHAKE_A, // sent [0B 0B 03 05] dev=00 first time
+  HS_BUS_HANDSHAKE_B, // sent [0B 0B 03 05] dev=00 second time
+  HS_IDENTITY_3,      // sent [00 00 01] third time
+  HS_WAIT_REANNOUNCE, // waiting ~5s before second announce
+  HS_ANNOUNCE_2,      // sent [0B 0B FF FF] dev=01 second time
+  HS_POWER_SYNC,      // sent [28 28 00 01 ...] power state
+  HS_IDENTITY_4,      // sent [00 00 01] fourth time
+  HS_TIMESTAMP,       // sent [15 15 ...] timestamp frame
+  HS_COMPLETE,        // handshake done, normal operation
+};
+
+// ── String helpers ────────────────────────────────────────────────────────────
 std::string v_swing_val_to_str(uint8_t val);
 std::string h_swing_val_to_str(uint8_t val);
 
@@ -107,12 +124,13 @@ struct TlvEntry {
   uint8_t  bank;
   uint8_t  reg;
   uint32_t value;
-  uint8_t  size;  // 1, 2, or 4
+  uint8_t  size;
 };
 
 // ── Pending command ───────────────────────────────────────────────────────────
 struct PendingCommand {
   std::vector<uint8_t> payload;
+  uint8_t dev_id;   // DEV_NORMAL or DEV_HEARTBEAT
 };
 
 // ── SwingSelect ───────────────────────────────────────────────────────────────
@@ -176,13 +194,24 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   void send_registers(const std::vector<TlvEntry> &entries);
 
  protected:
+  // ── CRC ───────────────────────────────────────────────────────────────────
   uint16_t crc16_xmodem(const uint8_t *data, size_t len);
 
-  std::vector<uint8_t> build_frame(const std::vector<uint8_t> &payload);
-  std::vector<uint8_t> build_ack_frame(uint8_t seq, uint8_t dev_id = DEV_ID);
-  void send_poll_frame();
-  void enqueue_command(const std::vector<uint8_t> &payload);
+  // ── Frame building ────────────────────────────────────────────────────────
+  std::vector<uint8_t> build_frame(const std::vector<uint8_t> &payload,
+                                   uint8_t dev_id = DEV_NORMAL);
+  std::vector<uint8_t> build_ack_frame(uint8_t seq, uint8_t dev_id = DEV_NORMAL);
+  void enqueue_command(const std::vector<uint8_t> &payload,
+                       uint8_t dev_id = DEV_NORMAL);
 
+  // ── Handshake ─────────────────────────────────────────────────────────────
+  void run_handshake();
+  void send_handshake_frame(const std::vector<uint8_t> &payload,
+                            uint8_t dev_id, HandshakeState next_state,
+                            bool wait_ack = true);
+  void advance_handshake(bool ack_received, const std::vector<uint8_t> &frame);
+
+  // ── Frame parsing ─────────────────────────────────────────────────────────
   void process_rx_byte(uint8_t byte);
   bool try_parse_frame();
   void handle_indoor_frame(const std::vector<uint8_t> &frame);
@@ -190,24 +219,40 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   std::vector<TlvEntry> parse_tlv(const uint8_t *data, size_t len);
   bool is_4byte_special(uint8_t reg);
 
+  // ── State application ─────────────────────────────────────────────────────
   void apply_tlv_entries(const std::vector<TlvEntry> &entries, bool is_sensor_scan);
   void publish_climate_state();
 
+  // ── TX ────────────────────────────────────────────────────────────────────
   void send_frame(const std::vector<uint8_t> &frame);
   void maybe_send_next_command();
+  void send_poll_frame();
 
-  // TX state
+  // ── Timing constants ──────────────────────────────────────────────────────
+  static const uint32_t ACK_TIMEOUT_MS   = 500;
+  static const uint32_t HS_STEP_DELAY_MS = 200;   // between handshake steps
+  static const uint32_t HS_REANNOUNCE_MS = 5000;  // wait before second announce
+  static const uint32_t POLL_INTERVAL_MS = 28000;
+
+  // ── TX state ──────────────────────────────────────────────────────────────
   uint8_t  tx_seq_{0x01};
   bool     waiting_for_ack_{false};
   uint32_t last_tx_ms_{0};
   uint32_t last_poll_ms_{0};
-  static const uint32_t ACK_TIMEOUT_MS  = 500;
-  static const uint32_t POLL_INTERVAL_MS = 28000;  // ~30s poll to keep indoor in normal mode
 
-  std::queue<PendingCommand>   tx_queue_;
-  std::vector<uint8_t>         rx_buf_;
+  std::queue<PendingCommand> tx_queue_;
+  std::vector<uint8_t>       rx_buf_;
 
-  // Unit state
+  // ── Handshake state ───────────────────────────────────────────────────────
+  HandshakeState hs_state_{HS_IDLE};
+  uint32_t       hs_step_ms_{0};       // time of last hs step sent
+  bool           hs_waiting_ack_{false};
+  uint8_t        hs_seq_{0x01};        // dedicated seq counter for handshake frames
+
+  // Last [0C 0C] heartbeat payload received from indoor — echoed back verbatim
+  std::vector<uint8_t> last_heartbeat_payload_;
+
+  // ── Unit state ────────────────────────────────────────────────────────────
   bool    power_{false};
   uint8_t mode_{MODE_COOL};
   float   set_temp_f_{72.0f};
@@ -216,7 +261,7 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint8_t v_swing_{VSWING_FIX_MID};
   uint8_t h_swing_{HSWING_FIX_CENTER};
   bool    eco_{false};
-  bool    disp_{true};   // renamed from display_ to avoid macro collision risk
+  bool    disp_{true};
   bool    beep_{true};
   uint8_t sleep_mode_{0};
 
@@ -226,9 +271,9 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint8_t comp_freq_{0};
   uint8_t fan_rpm_pct_{0};
 
-  bool state_received_{false};
+  bool    state_received_{false};
 
-  // Sub-components
+  // ── Sub-components ────────────────────────────────────────────────────────
   sensor::Sensor  *room_temp_sensor_{nullptr};
   sensor::Sensor  *indoor_coil_sensor_{nullptr};
   sensor::Sensor  *outdoor_coil_sensor_{nullptr};

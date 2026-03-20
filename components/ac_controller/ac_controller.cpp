@@ -7,7 +7,9 @@ namespace ac_controller {
 
 static const char *const TAG = "ac_controller";
 
-// ── CRC-16/XMODEM ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// CRC-16/XMODEM  poly=0x1021  init=0x0000  no reflection
+// ─────────────────────────────────────────────────────────────────────────────
 uint16_t AcController::crc16_xmodem(const uint8_t *data, size_t len) {
   uint16_t crc = 0x0000;
   for (size_t i = 0; i < len; i++) {
@@ -18,24 +20,26 @@ uint16_t AcController::crc16_xmodem(const uint8_t *data, size_t len) {
   return crc;
 }
 
-// ── Frame building ────────────────────────────────────────────────────────────
-std::vector<uint8_t> AcController::build_frame(const std::vector<uint8_t> &payload) {
+// ─────────────────────────────────────────────────────────────────────────────
+// Frame building
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<uint8_t> AcController::build_frame(const std::vector<uint8_t> &payload,
+                                                uint8_t dev_id) {
   uint8_t total_len = (uint8_t)(10 + payload.size());
   std::vector<uint8_t> frame;
   frame.reserve(total_len);
   frame.push_back(FRAME_HEADER);
   frame.push_back(BUS_ID);
-  frame.push_back(DEV_ID);
+  frame.push_back(dev_id);
   frame.push_back(TYPE_CMD);
   frame.push_back(tx_seq_);
   frame.push_back(0x00);
   frame.push_back(0x00);
   frame.push_back(total_len);
-  frame.push_back(0x00);  // CRC1 placeholder
-  frame.push_back(0x00);  // CRC2 placeholder
+  frame.push_back(0x00);  // CRC placeholder
+  frame.push_back(0x00);
   for (auto b : payload) frame.push_back(b);
 
-  // CRC over bytes 0-7 + payload (skipping CRC bytes 8-9)
   std::vector<uint8_t> crc_input(frame.begin(), frame.begin() + 8);
   crc_input.insert(crc_input.end(), payload.begin(), payload.end());
   uint16_t crc = crc16_xmodem(crc_input.data(), crc_input.size());
@@ -45,7 +49,6 @@ std::vector<uint8_t> AcController::build_frame(const std::vector<uint8_t> &paylo
 }
 
 std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq, uint8_t dev_id) {
-  // ACK frame type=0x23, seq1=0x00, seq2=echoed seq, payload=0x80 0x0A
   std::vector<uint8_t> frame;
   frame.push_back(FRAME_HEADER);
   frame.push_back(BUS_ID);
@@ -54,17 +57,18 @@ std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq, uint8_t dev_id) 
   frame.push_back(0x00);
   frame.push_back(seq);
   frame.push_back(0x00);
-  frame.push_back(12);   // total length
-  frame.push_back(0x00); // CRC1
-  frame.push_back(0x00); // CRC2
+  frame.push_back(12);
+  frame.push_back(0x00);
+  frame.push_back(0x00);
+  // ACK payload mirrors the prefix: 0x80 + incoming prefix byte
+  uint8_t mirror = (dev_id == DEV_HEARTBEAT) ? PREFIX_INDOOR_LO : PREFIX_INDOOR_LO;
   frame.push_back(0x80);
-  frame.push_back(ACK_PAYLOAD_IN);
+  frame.push_back(PREFIX_INDOOR_LO);  // 0x0C
 
-  // CRC over header bytes + payload
   uint8_t crc_buf[10] = {
     frame[0], frame[1], frame[2], frame[3],
     frame[4], frame[5], frame[6], frame[7],
-    0x80, ACK_PAYLOAD_IN
+    0x80, PREFIX_INDOOR_LO
   };
   uint16_t crc = crc16_xmodem(crc_buf, 10);
   frame[8] = (crc >> 8) & 0xFF;
@@ -72,7 +76,9 @@ std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq, uint8_t dev_id) 
   return frame;
 }
 
-// ── TLV helpers ───────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// TLV helpers
+// ─────────────────────────────────────────────────────────────────────────────
 bool AcController::is_4byte_special(uint8_t reg) {
   return reg == REG_OUTDOOR_COIL || reg == 0x64 ||
          reg == REG_INDOOR_COIL  || reg == REG_FAN_RPM;
@@ -92,27 +98,21 @@ std::vector<TlvEntry> AcController::parse_tlv(const uint8_t *data, size_t len) {
       if (i + 6 > len) break;
       e.value = ((uint32_t) data[i+2] << 24) | ((uint32_t) data[i+3] << 16) |
                 ((uint32_t) data[i+4] <<  8) |  (uint32_t) data[i+5];
-      e.size = 4;
-      i += 6;
+      e.size = 4; i += 6;
     } else if (bank == 0x00) {
       if (i + 3 > len) break;
-      e.value = data[i + 2];
-      e.size  = 1;
-      i += 3;
+      e.value = data[i + 2]; e.size = 1; i += 3;
     } else if (bank == 0x01) {
       if (i + 4 > len) break;
       e.value = ((uint32_t) data[i+2] << 8) | data[i+3];
-      e.size  = 2;
-      i += 4;
+      e.size = 2; i += 4;
     } else if (bank == 0x02) {
       if (i + 6 > len) break;
       e.value = ((uint32_t) data[i+2] << 24) | ((uint32_t) data[i+3] << 16) |
                 ((uint32_t) data[i+4] <<  8) |  (uint32_t) data[i+5];
-      e.size = 4;
-      i += 6;
+      e.size = 4; i += 6;
     } else {
-      i += 2;
-      continue;
+      i += 2; continue;
     }
     entries.push_back(e);
   }
@@ -123,7 +123,8 @@ static std::vector<uint8_t> build_tlv_payload(const std::vector<TlvEntry> &entri
   std::vector<uint8_t> payload;
   payload.push_back(PREFIX_CTRL_HI);
   payload.push_back(PREFIX_CTRL_LO);
-  for (const TlvEntry &e : entries) {
+  for (size_t i = 0; i < entries.size(); i++) {
+    const TlvEntry &e = entries[i];
     payload.push_back(e.bank);
     payload.push_back(e.reg);
     if (e.size == 1) {
@@ -141,32 +142,33 @@ static std::vector<uint8_t> build_tlv_payload(const std::vector<TlvEntry> &entri
   return payload;
 }
 
-// ── TX queue ──────────────────────────────────────────────────────────────────
-void AcController::enqueue_command(const std::vector<uint8_t> &payload) {
+// ─────────────────────────────────────────────────────────────────────────────
+// TX queue
+// ─────────────────────────────────────────────────────────────────────────────
+void AcController::enqueue_command(const std::vector<uint8_t> &payload,
+                                   uint8_t dev_id) {
   PendingCommand cmd;
   cmd.payload = payload;
+  cmd.dev_id  = dev_id;
   tx_queue_.push(cmd);
 }
 
 void AcController::send_register(uint8_t bank, uint8_t reg, uint32_t value) {
   uint8_t size = (bank == 0x02 || is_4byte_special(reg)) ? 4 : (bank == 0x01 ? 2 : 1);
   TlvEntry e;
-  e.bank  = bank;
-  e.reg   = reg;
-  e.value = value;
-  e.size  = size;
+  e.bank = bank; e.reg = reg; e.value = value; e.size = size;
   std::vector<TlvEntry> v;
   v.push_back(e);
   send_registers(v);
 }
 
 void AcController::send_registers(const std::vector<TlvEntry> &entries) {
-  enqueue_command(build_tlv_payload(entries));
+  enqueue_command(build_tlv_payload(entries), DEV_NORMAL);
 }
 
 void AcController::send_frame(const std::vector<uint8_t> &frame) {
   write_array(frame.data(), frame.size());
-  ESP_LOGV(TAG, "TX [%d bytes]", (int) frame.size());
+  ESP_LOGV(TAG, "TX [%d bytes] dev=%02X", (int) frame.size(), frame[2]);
 }
 
 void AcController::maybe_send_next_command() {
@@ -181,7 +183,7 @@ void AcController::maybe_send_next_command() {
   if (tx_queue_.empty()) return;
 
   PendingCommand &cmd = tx_queue_.front();
-  auto frame = build_frame(cmd.payload);
+  auto frame = build_frame(cmd.payload, cmd.dev_id);
   send_frame(frame);
   last_tx_ms_ = millis();
   waiting_for_ack_ = true;
@@ -189,16 +191,202 @@ void AcController::maybe_send_next_command() {
   tx_queue_.pop();
 }
 
-// ── RX parsing ────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Handshake state machine
+//
+// Mirrors the WiFi module startup sequence observed in captures:
+//   1. [00 00 01] dev=00           — identity query (x4, ignored response)
+//   2. [0B 0B FF FF] dev=01        — announce as controller (x2, wait [80 0B])
+//   3. [0B 0B 03 05] dev=00 x2     — bus-level handshake
+//   4. [28 28 00 01 ...] dev=00    — power state sync
+//   5. [15 15 <ts> FC] dev=00      — timestamp frame (no ack expected)
+//   After: indoor sends 26 26 / 10 10 / 0C 0C — respond to each
+// ─────────────────────────────────────────────────────────────────────────────
+void AcController::run_handshake() {
+  uint32_t now = millis();
+
+  // Build raw frames directly for handshake (bypasses normal TX queue)
+  auto send_hs = [&](const std::vector<uint8_t> &payload, uint8_t dev_id) {
+    uint8_t total_len = (uint8_t)(10 + payload.size());
+    std::vector<uint8_t> frame;
+    frame.push_back(FRAME_HEADER);
+    frame.push_back(BUS_ID);
+    frame.push_back(dev_id);
+    frame.push_back(TYPE_CMD);
+    frame.push_back(hs_seq_);
+    frame.push_back(0x00);
+    frame.push_back(0x00);
+    frame.push_back(total_len);
+    frame.push_back(0x00);
+    frame.push_back(0x00);
+    for (auto b : payload) frame.push_back(b);
+    std::vector<uint8_t> ci(frame.begin(), frame.begin() + 8);
+    ci.insert(ci.end(), payload.begin(), payload.end());
+    uint16_t crc = crc16_xmodem(ci.data(), ci.size());
+    frame[8] = (crc >> 8) & 0xFF;
+    frame[9] = crc & 0xFF;
+    send_frame(frame);
+    hs_seq_ = (hs_seq_ == 0xFF) ? 0x01 : hs_seq_ + 1;
+    hs_step_ms_ = now;
+    hs_waiting_ack_ = true;
+  };
+
+  switch (hs_state_) {
+
+    case HS_IDLE:
+      ESP_LOGI(TAG, "Starting handshake sequence");
+      send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
+      hs_state_ = HS_IDENTITY_1;
+      break;
+
+    case HS_IDENTITY_1:
+      if (!hs_waiting_ack_) {
+        // Got identity response — now announce as controller
+        send_hs({0x0B, 0x0B, 0xFF, 0xFF}, DEV_NORMAL);
+        hs_state_ = HS_ANNOUNCE_1;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS identity_1 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_ANNOUNCE_1:
+      if (!hs_waiting_ack_) {
+        // Got [80 0B] — send second identity query
+        send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
+        hs_state_ = HS_IDENTITY_2;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS announce_1 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_IDENTITY_2:
+      if (!hs_waiting_ack_) {
+        send_hs({0x0B, 0x0B, 0x03, 0x05}, DEV_HEARTBEAT);
+        hs_state_ = HS_BUS_HANDSHAKE_A;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS identity_2 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_BUS_HANDSHAKE_A:
+      if (!hs_waiting_ack_) {
+        send_hs({0x0B, 0x0B, 0x03, 0x05}, DEV_HEARTBEAT);
+        hs_state_ = HS_BUS_HANDSHAKE_B;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS bus_hs_a timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_BUS_HANDSHAKE_B:
+      if (!hs_waiting_ack_) {
+        send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
+        hs_state_ = HS_IDENTITY_3;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS bus_hs_b timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_IDENTITY_3:
+      if (!hs_waiting_ack_) {
+        // Wait ~5s before second controller announce
+        hs_state_ = HS_WAIT_REANNOUNCE;
+        hs_step_ms_ = now;
+        hs_waiting_ack_ = false;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS identity_3 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_WAIT_REANNOUNCE:
+      if (now - hs_step_ms_ > HS_REANNOUNCE_MS) {
+        send_hs({0x0B, 0x0B, 0xFF, 0xFF}, DEV_NORMAL);
+        hs_state_ = HS_ANNOUNCE_2;
+      }
+      break;
+
+    case HS_ANNOUNCE_2:
+      if (!hs_waiting_ack_) {
+        // Send power state sync: [28 28 00 01 <power> 00 00 00 00]
+        // reg 0x01 = power state using 28 28 prefix (WiFi module's command prefix)
+        uint8_t pwr = power_ ? 0x01 : 0x00;
+        send_hs({0x28, 0x28, 0x00, 0x01, pwr, 0x00, 0x00, 0x00}, DEV_HEARTBEAT);
+        hs_state_ = HS_POWER_SYNC;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS announce_2 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_POWER_SYNC:
+      if (!hs_waiting_ack_) {
+        send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
+        hs_state_ = HS_IDENTITY_4;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS power_sync timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_IDENTITY_4:
+      if (!hs_waiting_ack_) {
+        // Send timestamp frame: [15 15 <4-byte millis/0> FC]
+        // We don't have a real clock so use 0x00000000 for the timestamp.
+        // The indoor unit doesn't validate it — it just stores it.
+        send_hs({0x15, 0x15, 0x00, 0x00, 0x00, 0x00, 0xFC}, DEV_HEARTBEAT);
+        hs_state_ = HS_TIMESTAMP;
+        // 15 15 frame: no ack expected from indoor, just advance after short delay
+        hs_waiting_ack_ = false;
+        hs_step_ms_ = now;
+      } else if (now - hs_step_ms_ > ACK_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "HS identity_4 timeout, retrying");
+        hs_state_ = HS_IDLE;
+      }
+      break;
+
+    case HS_TIMESTAMP:
+      // No ACK expected — wait a short moment then declare handshake complete.
+      // The indoor will now send 26 26 / 10 10 / 0C 0C which handle_indoor_frame
+      // will respond to automatically.
+      if (now - hs_step_ms_ > 500) {
+        ESP_LOGI(TAG, "Handshake complete — waiting for indoor bus sequence");
+        hs_state_ = HS_COMPLETE;
+        last_poll_ms_ = now;  // reset poll timer
+      }
+      break;
+
+    case HS_COMPLETE:
+      // Nothing to do here — periodic poll is handled in loop()
+      break;
+  }
+}
+
+// Called from handle_ack_frame to advance the handshake
+void AcController::advance_handshake(bool ack_received,
+                                     const std::vector<uint8_t> &frame) {
+  if (hs_state_ == HS_COMPLETE) return;
+  if (ack_received) {
+    hs_waiting_ack_ = false;
+    ESP_LOGD(TAG, "HS ACK received in state %d", (int) hs_state_);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RX parsing
+// ─────────────────────────────────────────────────────────────────────────────
 void AcController::process_rx_byte(uint8_t byte) {
   if (rx_buf_.empty() && byte != FRAME_HEADER) return;
   rx_buf_.push_back(byte);
   if (rx_buf_.size() < 8) return;
 
   uint8_t expected_len = rx_buf_[7];
-  if (expected_len < 10 || expected_len > 128) {
-    rx_buf_.clear();
-    return;
+  if (expected_len < 10 || expected_len > 200) {
+    rx_buf_.clear(); return;
   }
   if (rx_buf_.size() < (size_t) expected_len) return;
 
@@ -216,7 +404,6 @@ bool AcController::try_parse_frame() {
   uint8_t len = rx_buf_[7];
   if (rx_buf_.size() < (size_t) len) return false;
 
-  // Build CRC input: header bytes + payload
   std::vector<uint8_t> crc_input(rx_buf_.begin(), rx_buf_.begin() + 8);
   crc_input.insert(crc_input.end(), rx_buf_.begin() + 10, rx_buf_.begin() + len);
   uint16_t calc  = crc16_xmodem(crc_input.data(), crc_input.size());
@@ -228,29 +415,126 @@ bool AcController::try_parse_frame() {
   }
 
   std::vector<uint8_t> frame(rx_buf_.begin(), rx_buf_.begin() + len);
-  if (frame[3] == TYPE_CMD) {
+  uint8_t type   = frame[3];
+  uint8_t dev_id = frame[2];
+
+  if (type == TYPE_CMD) {
     handle_indoor_frame(frame);
-  } else if (frame[3] == TYPE_ACK) {
+  } else if (type == TYPE_ACK) {
     handle_ack_frame(frame);
   }
   return true;
 }
 
 void AcController::handle_ack_frame(const std::vector<uint8_t> &frame) {
-  ESP_LOGV(TAG, "RX ACK seq=%02X", frame[5]);
-  waiting_for_ack_ = false;
+  uint8_t seq = frame[5];
+  uint8_t dev = frame[2];
+  ESP_LOGV(TAG, "RX ACK seq=%02X dev=%02X", seq, dev);
+
+  // Release normal TX queue wait
+  if (waiting_for_ack_) {
+    waiting_for_ack_ = false;
+  }
+
+  // Advance handshake if in progress
+  if (hs_state_ != HS_COMPLETE) {
+    advance_handshake(true, frame);
+  }
 }
 
 void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
   if (frame.size() < 12) return;
-  uint8_t seq = frame[4];
-  ESP_LOGV(TAG, "RX CMD seq=%02X len=%d", seq, (int) frame.size());
 
-  // ACK immediately — mirror the device ID from the incoming frame
-  send_frame(build_ack_frame(seq, frame[2]));
-
+  uint8_t seq    = frame[4];
+  uint8_t dev_id = frame[2];
   const uint8_t *payload = frame.data() + 10;
   size_t plen = frame.size() - 10;
+
+  ESP_LOGV(TAG, "RX CMD seq=%02X dev=%02X len=%d", seq, dev_id, (int) frame.size());
+
+  // ── Heartbeat bus frames (dev=00) ─────────────────────────────────────────
+  if (dev_id == DEV_HEARTBEAT && plen >= 2) {
+    uint8_t p0 = payload[0], p1 = payload[1];
+
+    if (p0 == 0x26 && p1 == 0x26) {
+      // [26 26] — no response needed
+      ESP_LOGD(TAG, "RX 26 26 bus announce");
+      return;
+    }
+
+    if (p0 == 0x10 && p1 == 0x10) {
+      // [10 10] — respond with [80 10 <timestamp 4 bytes> FC]
+      // Mirror format: use 0x00000000 as timestamp (no RTC available)
+      ESP_LOGD(TAG, "RX 10 10 — sending timestamp response");
+      uint8_t resp_buf[17];
+      resp_buf[0] = FRAME_HEADER;
+      resp_buf[1] = BUS_ID;
+      resp_buf[2] = DEV_HEARTBEAT;
+      resp_buf[3] = TYPE_ACK;
+      resp_buf[4] = 0x00;
+      resp_buf[5] = seq;
+      resp_buf[6] = 0x00;
+      resp_buf[7] = 17;  // total length
+      resp_buf[8] = 0x00; resp_buf[9] = 0x00;  // CRC placeholders
+      resp_buf[10] = 0x80;
+      resp_buf[11] = 0x10;
+      resp_buf[12] = 0x00; resp_buf[13] = 0x00;
+      resp_buf[14] = 0x00; resp_buf[15] = 0x00;  // 4-byte timestamp = 0
+      resp_buf[16] = 0xFC;
+      uint8_t ci[15] = {resp_buf[0],resp_buf[1],resp_buf[2],resp_buf[3],
+                        resp_buf[4],resp_buf[5],resp_buf[6],resp_buf[7],
+                        0x80,0x10,0x00,0x00,0x00,0x00,0xFC};
+      uint16_t crc = crc16_xmodem(ci, 15);
+      resp_buf[8] = (crc >> 8) & 0xFF;
+      resp_buf[9] = crc & 0xFF;
+      write_array(resp_buf, 17);
+      return;
+    }
+
+    if (p0 == 0x0C && p1 == 0x0C) {
+      // [0C 0C] heartbeat — save payload and echo it back verbatim
+      last_heartbeat_payload_.assign(payload, payload + plen);
+      ESP_LOGD(TAG, "RX 0C 0C heartbeat — echoing back");
+
+      // Build response: [80 0C] + remainder of received payload
+      std::vector<uint8_t> resp_payload;
+      resp_payload.push_back(0x80);
+      resp_payload.push_back(0x0C);
+      if (plen > 2)
+        resp_payload.insert(resp_payload.end(), payload + 2, payload + plen);
+
+      uint8_t resp_len = (uint8_t)(10 + resp_payload.size());
+      std::vector<uint8_t> resp_frame;
+      resp_frame.push_back(FRAME_HEADER);
+      resp_frame.push_back(BUS_ID);
+      resp_frame.push_back(DEV_HEARTBEAT);
+      resp_frame.push_back(TYPE_ACK);
+      resp_frame.push_back(0x00);
+      resp_frame.push_back(seq);
+      resp_frame.push_back(0x00);
+      resp_frame.push_back(resp_len);
+      resp_frame.push_back(0x00);
+      resp_frame.push_back(0x00);
+      for (auto b : resp_payload) resp_frame.push_back(b);
+
+      std::vector<uint8_t> ci(resp_frame.begin(), resp_frame.begin() + 8);
+      ci.insert(ci.end(), resp_payload.begin(), resp_payload.end());
+      uint16_t crc = crc16_xmodem(ci.data(), ci.size());
+      resp_frame[8] = (crc >> 8) & 0xFF;
+      resp_frame[9] = crc & 0xFF;
+      write_array(resp_frame.data(), resp_frame.size());
+      return;
+    }
+
+    // Unknown heartbeat frame — just log it
+    ESP_LOGD(TAG, "RX unknown heartbeat frame %02X %02X", p0, p1);
+    return;
+  }
+
+  // ── Normal addressed frames (dev=01) ─────────────────────────────────────
+  // ACK immediately, mirroring the device ID
+  send_frame(build_ack_frame(seq, dev_id));
+
   if (plen < 2) return;
   if (payload[0] != PREFIX_INDOOR_HI || payload[1] != PREFIX_INDOOR_LO) return;
 
@@ -260,16 +544,18 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
   bool is_sensor_scan = false;
   for (size_t i = 0; i + 1 < tlvlen; i++) {
     if (tlv[i] == 0x00 && tlv[i + 1] == REG_SENSOR_MARKER) {
-      is_sensor_scan = true;
-      break;
+      is_sensor_scan = true; break;
     }
   }
 
   apply_tlv_entries(parse_tlv(tlv, tlvlen), is_sensor_scan);
 }
 
-// ── State application ─────────────────────────────────────────────────────────
-void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries, bool is_sensor_scan) {
+// ─────────────────────────────────────────────────────────────────────────────
+// State application
+// ─────────────────────────────────────────────────────────────────────────────
+void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
+                                     bool is_sensor_scan) {
   bool changed = false;
 
   for (size_t i = 0; i < entries.size(); i++) {
@@ -290,13 +576,9 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries, bool 
 
     switch (e.reg) {
       case REG_POWER:
-        power_ = (e.value != 0);
-        changed = true;
-        break;
+        power_ = (e.value != 0); changed = true; break;
       case REG_MODE:
-        mode_ = (uint8_t) e.value;
-        changed = true;
-        break;
+        mode_ = (uint8_t) e.value; changed = true; break;
       case REG_SET_TEMP:
         if (e.bank == 0x02 || e.size == 4) {
           set_temp_f_ = (float) e.value;
@@ -305,13 +587,9 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries, bool 
         }
         break;
       case REG_FAN_SPEED:
-        fan_speed_ = (uint8_t) e.value;
-        changed = true;
-        break;
+        fan_speed_ = (uint8_t) e.value; changed = true; break;
       case REG_FAN_AUTO_MODE:
-        fan_auto_ = (e.value != 0);
-        changed = true;
-        break;
+        fan_auto_ = (e.value != 0); changed = true; break;
       case REG_V_SWING:
         v_swing_ = (uint8_t) e.value;
         if (v_swing_select_)
@@ -366,7 +644,8 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries, bool 
         break;
       }
       default:
-        ESP_LOGV(TAG, "Unhandled reg=0x%02X bank=0x%02X val=0x%08X", e.reg, e.bank, e.value);
+        ESP_LOGV(TAG, "Unhandled reg=0x%02X bank=0x%02X val=0x%08X",
+                 e.reg, e.bank, e.value);
         break;
     }
   }
@@ -416,7 +695,9 @@ void AcController::publish_climate_state() {
   publish_state();
 }
 
-// ── String helpers ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Swing string helpers
+// ─────────────────────────────────────────────────────────────────────────────
 std::string v_swing_val_to_str(uint8_t val) {
   switch (val) {
     case VSWING_UPDOWN:      return "Swing Up-Down";
@@ -446,7 +727,9 @@ std::string h_swing_val_to_str(uint8_t val) {
   }
 }
 
-// ── Climate::control ──────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Climate::control
+// ─────────────────────────────────────────────────────────────────────────────
 void AcController::control(const climate::ClimateCall &call) {
   std::vector<TlvEntry> entries;
 
@@ -457,6 +740,11 @@ void AcController::control(const climate::ClimateCall &call) {
       TlvEntry e; e.bank=0x00; e.reg=REG_POWER; e.value=(np?1:0); e.size=1;
       entries.push_back(e);
       power_ = np;
+      // When powering on, send Eco state together (matches observed WiFi module behaviour)
+      if (np) {
+        TlvEntry e2; e2.bank=0x00; e2.reg=REG_ECO; e2.value=(eco_?1:0); e2.size=1;
+        entries.push_back(e2);
+      }
     }
     if (np) {
       uint8_t am = mode_;
@@ -488,8 +776,7 @@ void AcController::control(const climate::ClimateCall &call) {
   }
 
   if (call.get_fan_mode().has_value()) {
-    uint8_t nf = fan_speed_;
-    bool na = false;
+    uint8_t nf = fan_speed_; bool na = false;
     switch (*call.get_fan_mode()) {
       case climate::CLIMATE_FAN_AUTO:   nf = FAN_AUTO; na = true;  break;
       case climate::CLIMATE_FAN_LOW:    nf = FAN_LOW;  na = false; break;
@@ -500,10 +787,8 @@ void AcController::control(const climate::ClimateCall &call) {
     if (nf != fan_speed_ || na != fan_auto_) {
       TlvEntry e1; e1.bank=0x00; e1.reg=REG_FAN_SPEED;    e1.value=nf;    e1.size=1;
       TlvEntry e2; e2.bank=0x00; e2.reg=REG_FAN_AUTO_MODE; e2.value=(na?1:0); e2.size=1;
-      entries.push_back(e1);
-      entries.push_back(e2);
-      fan_speed_ = nf;
-      fan_auto_  = na;
+      entries.push_back(e1); entries.push_back(e2);
+      fan_speed_ = nf; fan_auto_ = na;
     }
   }
 
@@ -522,13 +807,11 @@ void AcController::control(const climate::ClimateCall &call) {
     }
     if (nv != v_swing_) {
       TlvEntry e; e.bank=0x00; e.reg=REG_V_SWING; e.value=nv; e.size=1;
-      entries.push_back(e);
-      v_swing_ = nv;
+      entries.push_back(e); v_swing_ = nv;
     }
     if (nh != h_swing_) {
       TlvEntry e; e.bank=0x00; e.reg=REG_H_SWING; e.value=nh; e.size=1;
-      entries.push_back(e);
-      h_swing_ = nh;
+      entries.push_back(e); h_swing_ = nh;
     }
   }
 
@@ -536,7 +819,9 @@ void AcController::control(const climate::ClimateCall &call) {
     send_registers(entries);
 }
 
-// ── Climate traits ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Climate traits
+// ─────────────────────────────────────────────────────────────────────────────
 climate::ClimateTraits AcController::traits() {
   auto t = climate::ClimateTraits();
   t.set_supports_current_temperature(true);
@@ -560,68 +845,65 @@ climate::ClimateTraits AcController::traits() {
     climate::CLIMATE_SWING_HORIZONTAL,
     climate::CLIMATE_SWING_BOTH,
   });
-  // Temperature range: ~60-90°F in °C
   t.set_visual_min_temperature(15.5f);
   t.set_visual_max_temperature(32.0f);
   t.set_visual_temperature_step(0.5f);
   return t;
 }
 
-
-// ── Periodic poll frame ───────────────────────────────────────────────────────
-// Mimics the real controller's ~30s heartbeat poll to keep the indoor unit
-// in its normal low-traffic broadcast rhythm rather than "no controller" mode.
+// ─────────────────────────────────────────────────────────────────────────────
+// Periodic poll (after handshake)
+// ─────────────────────────────────────────────────────────────────────────────
 void AcController::send_poll_frame() {
-  // A5 01 00 21 00 00 00 0C CRC1 CRC2 0C 0C
-  std::vector<uint8_t> payload = {0x0C, 0x0C};
-  uint8_t total_len = 12;
-  std::vector<uint8_t> frame;
-  frame.push_back(FRAME_HEADER);
-  frame.push_back(BUS_ID);
-  frame.push_back(0x00);       // dev_id = 0x00 (bus broadcast)
-  frame.push_back(TYPE_CMD);
-  frame.push_back(0x00);       // seq = 0x00
-  frame.push_back(0x00);
-  frame.push_back(0x00);
-  frame.push_back(total_len);
-  frame.push_back(0x00);       // CRC placeholder
-  frame.push_back(0x00);
-  frame.push_back(0x0C);
-  frame.push_back(0x0C);
-
-  uint8_t crc_buf[10] = {
-    frame[0], frame[1], frame[2], frame[3],
-    frame[4], frame[5], frame[6], frame[7],
-    0x0C, 0x0C
-  };
-  uint16_t crc = crc16_xmodem(crc_buf, 10);
+  // Heartbeat poll: A5 01 00 21 00 00 00 0C CRC1 CRC2 0C 0C
+  uint8_t frame[12];
+  frame[0] = FRAME_HEADER; frame[1] = BUS_ID; frame[2] = DEV_HEARTBEAT;
+  frame[3] = TYPE_CMD; frame[4] = 0x00; frame[5] = 0x00;
+  frame[6] = 0x00; frame[7] = 12;
+  frame[8] = 0x00; frame[9] = 0x00;
+  frame[10] = PREFIX_INDOOR_HI; frame[11] = PREFIX_INDOOR_LO;
+  uint8_t ci[10] = {frame[0],frame[1],frame[2],frame[3],
+                    frame[4],frame[5],frame[6],frame[7],
+                    PREFIX_INDOOR_HI, PREFIX_INDOOR_LO};
+  uint16_t crc = crc16_xmodem(ci, 10);
   frame[8] = (crc >> 8) & 0xFF;
   frame[9] = crc & 0xFF;
-
   ESP_LOGD(TAG, "Sending poll frame");
-  send_frame(frame);
+  write_array(frame, 12);
   last_poll_ms_ = millis();
 }
 
-// ── ESPHome lifecycle ─────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// ESPHome lifecycle
+// ─────────────────────────────────────────────────────────────────────────────
 void AcController::setup() {
-  ESP_LOGI(TAG, "AC Controller setup");
+  ESP_LOGI(TAG, "AC Controller setup — will start handshake");
   target_temperature  = 22.0f;
   current_temperature = NAN;
   mode       = climate::CLIMATE_MODE_OFF;
   fan_mode   = climate::CLIMATE_FAN_AUTO;
   swing_mode = climate::CLIMATE_SWING_OFF;
+  hs_state_  = HS_IDLE;
+  hs_seq_    = 0x01;
 }
 
 void AcController::loop() {
+  // Drain UART RX
   while (available()) {
-    uint8_t b;
-    read_byte(&b);
+    uint8_t b; read_byte(&b);
     process_rx_byte(b);
   }
+
+  // Run handshake state machine until complete
+  if (hs_state_ != HS_COMPLETE) {
+    run_handshake();
+    return;  // don't process normal queue until handshake done
+  }
+
+  // Normal operation
   maybe_send_next_command();
 
-  // Send periodic poll to keep indoor unit in normal broadcast mode
+  // Periodic poll to maintain indoor unit's normal broadcast rhythm
   if (millis() - last_poll_ms_ > POLL_INTERVAL_MS) {
     send_poll_frame();
   }
@@ -629,6 +911,7 @@ void AcController::loop() {
 
 void AcController::dump_config() {
   ESP_LOGCONFIG(TAG, "AC Controller:");
+  ESP_LOGCONFIG(TAG, "  Handshake: %s", hs_state_ == HS_COMPLETE ? "complete" : "pending");
   if (room_temp_sensor_)    ESP_LOGCONFIG(TAG, "  Room temp sensor: YES");
   if (indoor_coil_sensor_)  ESP_LOGCONFIG(TAG, "  Indoor coil sensor: YES");
   if (outdoor_coil_sensor_) ESP_LOGCONFIG(TAG, "  Outdoor coil sensor: YES");
@@ -642,7 +925,9 @@ void AcController::dump_config() {
   if (sleep_select_)        ESP_LOGCONFIG(TAG, "  Sleep mode: YES");
 }
 
-// ── Sub-component implementations ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-component implementations
+// ─────────────────────────────────────────────────────────────────────────────
 void AcSwingSelect::control(const std::string &value) {
   AcController *parent = (AcController *) parent_;
   uint8_t reg = is_vertical_ ? REG_V_SWING : REG_H_SWING;
