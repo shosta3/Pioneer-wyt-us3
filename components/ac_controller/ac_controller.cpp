@@ -557,8 +557,8 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
       if (send_poll) {
         resp_frame[12] = 0x02; resp_frame[13] = 0x64;
         resp_frame[14] = 0xFF; resp_frame[15] = 0xFF;
-        resp_frame[16] = 0xFF; resp_frame[17] = poll_counter_;
         poll_counter_++;
+        resp_frame[16] = 0xFF; resp_frame[17] = poll_counter_;
         ci[10]=0x02; ci[11]=0x64; ci[12]=0xFF; ci[13]=0xFF; ci[14]=0xFF; ci[15]=poll_counter_;
         ci_len = 16;
       } else {
@@ -583,15 +583,14 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
   if (plen < 2) return;
   if (payload[0] != PREFIX_INDOOR_HI || payload[1] != PREFIX_INDOOR_LO) return;
 
-  // Detect sensor scan: look for REG_SENSOR_MARKER in TLV data
+  // Detect standalone sensor scan frames.
+  // These are exactly 18 bytes total (tlvlen==6): [00 5C 00 00 <reg> <val>]
+  // The full state dump also contains reg 0x5C but is 80+ bytes — flagging those
+  // as sensor scans caused reg 0x60/0x65 to be silently skipped.
   const uint8_t *tlv = payload + 2;
   size_t tlvlen = plen - 2;
-  bool is_sensor_scan = false;
-  for (size_t i = 0; i + 1 < tlvlen; i++) {
-    if (tlv[i] == 0x00 && tlv[i + 1] == REG_SENSOR_MARKER) {
-      is_sensor_scan = true; break;
-    }
-  }
+  bool is_sensor_scan = (tlvlen == 6 &&
+                         tlv[0] == 0x00 && tlv[1] == REG_SENSOR_MARKER);
 
   apply_tlv_entries(parse_tlv(tlv, tlvlen), is_sensor_scan);
 }
@@ -607,24 +606,16 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
     const TlvEntry &e = entries[i];
 
     if (is_sensor_scan) {
-      if (e.bank != 0x00) { continue; }
-      if (e.reg == SENSOR_ROOM_TEMP) {
-        // reg 0x0D — room temperature in °F
-        // Only reported during active operation; 0 = not available
-        float f = (float) e.value;
-        if (f > 32.0f && f < 120.0f) {
-          room_temp_f_ = f;
-          current_temperature = (f - 32.0f) / 1.8f;
-          if (room_temp_sensor_) room_temp_sensor_->publish_state(f);
-          changed = true;
-        }
-      } else if (e.reg == REG_COMP_FREQ) {
-        // reg 0x09 — pipe/refrigerant temperature in °F (also appears in scan frames)
+      // Standalone sensor scan frame [00 5C 00 00 <reg> <val>] — 18 bytes total.
+      // The second register after 0x5C is a refrigerant circuit sensor cycling
+      // through the scan list (0x09, 0x0A, 0x0B, 0x0C, 0x0D etc).
+      // reg 0x09 = pipe temperature in °F — publish to comp_freq_sensor
+      if (e.bank == 0x00 && e.reg == REG_COMP_FREQ) {
         comp_freq_ = (uint8_t) e.value;
         if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_freq_);
       }
-      // All other sensor scan registers are informational only (motor positions,
-      // refrigerant pressures etc.) — no sensor exposed for them yet.
+      // Skip all other entries in pure sensor scan frames — they are motor
+      // position feedback registers (0x0C, 0x0D, 0x0A, 0x0B) not temperatures.
       continue;
     }
 
@@ -632,7 +623,12 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
       case REG_POWER:
         power_ = (e.value != 0); changed = true; break;
       case REG_MODE:
-        mode_ = (uint8_t) e.value; changed = true; break;
+        // Only apply if value is a valid mode enum (0x00-0x04).
+        // During active operation reg 0x12 carries status bitfields, not mode.
+        if (e.value <= 0x04) {
+          mode_ = (uint8_t) e.value; changed = true;
+        }
+        break;
       case REG_SET_TEMP:
         if (e.bank == 0x02 || e.size == 4) {
           set_temp_f_ = (float) e.value;
@@ -688,12 +684,10 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         if (fan_rpm_sensor_) fan_rpm_sensor_->publish_state(fan_rpm_pct_);
         break;
       case REG_INDOOR_COIL:
-        // reg 0x65 values are whole °C integers (not °F as previously assumed)
-        // 21=21°C, 46=46°C etc — confirmed against heat mode coil temperatures
-        if (e.value > 0) {
-          indoor_coil_f_ = (float) e.value;  // field name legacy, value is now °C
-          if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
-        }
+        // reg 0x65 — indoor coil temperature in °C (whole integers)
+        // 0 = compressor off / coil at ambient. Publish all values including 0.
+        indoor_coil_f_ = (float)(int32_t)e.value;  // signed: handle near-zero values
+        if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
         break;
       case REG_OUTDOOR_COIL: {
         // reg 0x60 values are tenths of °F (900=90°F, 1000=100°F, 1100=110°F)
