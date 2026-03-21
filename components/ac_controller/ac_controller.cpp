@@ -315,6 +315,17 @@ void AcController::run_handshake() {
 
     case HS_ANNOUNCE_2:
       // [0B 0B FF FF] sent second time — advance on ACK or timeout.
+      // Then send [28 28 00 01 00 00 00 00] — the controller initiates this,
+      // not the indoor. Confirmed across all real controller boot captures.
+      if (!hs_waiting_ack_ || (now - hs_step_ms_ > ACK_TIMEOUT_MS)) {
+        hs_waiting_ack_ = false;
+        send_hs({0x28, 0x28, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00}, DEV_HEARTBEAT);
+        hs_state_ = HS_POWER_SYNC;
+      }
+      break;
+
+    case HS_POWER_SYNC:
+      // Waiting for [80 28] ACK to [28 28] power sync — advance on ACK or timeout
       if (!hs_waiting_ack_ || (now - hs_step_ms_ > ACK_TIMEOUT_MS)) {
         hs_waiting_ack_ = false;
         send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
@@ -322,18 +333,15 @@ void AcController::run_handshake() {
       }
       break;
 
-    case HS_POWER_SYNC:
-      // Unused — falls through to identity_4 immediately
-      hs_state_ = HS_IDENTITY_4;
-      hs_waiting_ack_ = false;
-      break;
-
     case HS_IDENTITY_4:
       if (!hs_waiting_ack_) {
         // Send timestamp frame: [15 15 <4-byte millis/0> FC]
         // We don't have a real clock so use 0x00000000 for the timestamp.
         // The indoor unit doesn't validate it — it just stores it.
-        send_hs({0x15, 0x15, 0x00, 0x00, 0x00, 0x00, 0xFC}, DEV_HEARTBEAT);
+        uint32_t ts = millis() / 1000;
+        send_hs({0x15, 0x15,
+                 (uint8_t)((ts>>24)&0xFF), (uint8_t)((ts>>16)&0xFF),
+                 (uint8_t)((ts>>8)&0xFF),  (uint8_t)(ts&0xFF), 0xFC}, DEV_HEARTBEAT);
         hs_state_ = HS_TIMESTAMP;
         // 15 15 frame: no ack expected from indoor, just advance after short delay
         hs_waiting_ack_ = false;
@@ -345,13 +353,28 @@ void AcController::run_handshake() {
       break;
 
     case HS_TIMESTAMP:
-      // No ACK expected — wait a short moment then declare handshake complete.
-      // The indoor will now send 26 26 / 10 10 / 0C 0C which handle_indoor_frame
-      // will respond to automatically.
-      if (now - hs_step_ms_ > 500) {
-        ESP_LOGI(TAG, "Handshake complete — waiting for indoor bus sequence");
+      // No ACK expected for [15 15]. After a short delay send [0C 0C 00 D7 00 00 00 00]
+      // dev=01 — the final handshake step seen in all real controller boot captures.
+      if (now - hs_step_ms_ > 200) {
+        std::vector<uint8_t> d7_pl = {0x0C, 0x0C, 0x00, 0xD7, 0x00, 0x00, 0x00, 0x00};
+        uint8_t d7_len = (uint8_t)(10 + d7_pl.size());
+        std::vector<uint8_t> d7_fr;
+        d7_fr.push_back(FRAME_HEADER); d7_fr.push_back(BUS_ID);
+        d7_fr.push_back(DEV_NORMAL);   d7_fr.push_back(TYPE_CMD);
+        d7_fr.push_back(hs_seq_);      d7_fr.push_back(0x00);
+        d7_fr.push_back(0x00);         d7_fr.push_back(d7_len);
+        d7_fr.push_back(0x00);         d7_fr.push_back(0x00);
+        for (auto b : d7_pl) d7_fr.push_back(b);
+        std::vector<uint8_t> d7ci(d7_fr.begin(), d7_fr.begin() + 8);
+        d7ci.insert(d7ci.end(), d7_pl.begin(), d7_pl.end());
+        uint16_t d7crc = crc16_xmodem(d7ci.data(), d7ci.size());
+        d7_fr[8] = (d7crc >> 8) & 0xFF; d7_fr[9] = d7crc & 0xFF;
+        send_frame(d7_fr);
+        hs_seq_ = (hs_seq_ == 0xFF) ? 0x01 : hs_seq_ + 1;
+        poll_counter_ = 0xBF;
         hs_state_ = HS_COMPLETE;
-        last_poll_ms_ = now;  // reset poll timer
+        last_poll_ms_ = now;
+        ESP_LOGI(TAG, "Handshake complete");
       }
       break;
 
@@ -508,29 +531,43 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
     }
 
     if (p0 == 0x0C && p1 == 0x0C) {
-      // [0C 0C] heartbeat — respond with sensor poll request.
-      // The real WiFi module sends [80 0C 02 64 FF FF FF C0] rather than just
-      // [80 0C]. The extra bytes are a TLV read request (bank=0x02, reg=0x64)
-      // which causes the indoor unit to reply with a full sensor data frame
-      // including reg 0x60 (outdoor coil), reg 0x65 (indoor coil), reg 0x64
-      // etc. Without these bytes the indoor sends no sensor data at all.
-      ESP_LOGV(TAG, "RX 0C 0C heartbeat — sending sensor poll");
+      // [0C 0C] heartbeat from indoor unit.
+      // Real controller sends the sensor poll payload [80 0C 02 64 FF FF FF CX]
+      // on every third heartbeat; plain [80 0C] on the other two.
+      // The poll payload causes the indoor to reply with full sensor data
+      // (reg 0x60 outdoor coil, reg 0x65 indoor coil, reg 0x64 load etc).
+      heartbeat_count_++;
+      bool send_poll = (heartbeat_count_ % 3 == 0);
+      ESP_LOGV(TAG, "RX 0C 0C heartbeat #%u — %s", heartbeat_count_,
+               send_poll ? "sending poll" : "plain ACK");
 
-      static const uint8_t POLL_PAYLOAD[8] = {0x80, 0x0C, 0x02, 0x64, 0xFF, 0xFF, 0xFF, 0xC0};
+      uint8_t resp_len = send_poll ? 18 : 12;
       uint8_t resp_frame[18];
       resp_frame[0] = FRAME_HEADER; resp_frame[1] = BUS_ID;
       resp_frame[2] = DEV_HEARTBEAT; resp_frame[3] = TYPE_ACK;
       resp_frame[4] = 0x00; resp_frame[5] = seq;
-      resp_frame[6] = 0x00; resp_frame[7] = 18;
+      resp_frame[6] = 0x00; resp_frame[7] = resp_len;
       resp_frame[8] = 0x00; resp_frame[9] = 0x00;
-      for (int i = 0; i < 8; i++) resp_frame[10+i] = POLL_PAYLOAD[i];
+      resp_frame[10] = 0x80; resp_frame[11] = 0x0C;
+
+      size_t ci_len = 8;
       uint8_t ci[16] = {resp_frame[0],resp_frame[1],resp_frame[2],resp_frame[3],
                         resp_frame[4],resp_frame[5],resp_frame[6],resp_frame[7],
-                        0x80,0x0C,0x02,0x64,0xFF,0xFF,0xFF,0xC0};
-      uint16_t crc = crc16_xmodem(ci, 16);
+                        0x80,0x0C,0,0,0,0,0,0};
+      if (send_poll) {
+        resp_frame[12] = 0x02; resp_frame[13] = 0x64;
+        resp_frame[14] = 0xFF; resp_frame[15] = 0xFF;
+        resp_frame[16] = 0xFF; resp_frame[17] = poll_counter_;
+        poll_counter_++;
+        ci[10]=0x02; ci[11]=0x64; ci[12]=0xFF; ci[13]=0xFF; ci[14]=0xFF; ci[15]=poll_counter_;
+        ci_len = 16;
+      } else {
+        ci_len = 10;
+      }
+      uint16_t crc = crc16_xmodem(ci, ci_len);
       resp_frame[8] = (crc >> 8) & 0xFF;
       resp_frame[9] = crc & 0xFF;
-      write_array(resp_frame, 18);
+      write_array(resp_frame, resp_len);
       return;
     }
 

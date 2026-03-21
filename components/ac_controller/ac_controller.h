@@ -109,7 +109,7 @@ enum HandshakeState {
   HS_IDENTITY_3,      // sent [00 00 01] third time
   HS_WAIT_REANNOUNCE, // waiting ~5s before second announce
   HS_ANNOUNCE_2,      // sent [0B 0B FF FF] dev=01 second time
-  HS_POWER_SYNC,      // unused — [28 28] is sent BY indoor to us, not the other way
+  HS_POWER_SYNC,      // sent [28 28 00 01 00 00 00 00] dev=00 — controller initiates this
   HS_IDENTITY_4,      // sent [00 00 01] fourth time
   HS_TIMESTAMP,       // sent [15 15 ...] timestamp frame
   HS_COMPLETE,        // handshake done, normal operation
@@ -270,6 +270,8 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
 
   bool    state_received_{false};
   bool    pending_mode_followup_{false};
+  uint8_t poll_counter_{0xBF};
+  uint32_t heartbeat_count_{0};  // counts 0C 0C heartbeats, poll sent every 3rd
 
   // ── Sub-components ────────────────────────────────────────────────────────
   sensor::Sensor  *room_temp_sensor_{nullptr};
