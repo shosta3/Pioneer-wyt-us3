@@ -249,9 +249,6 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   bool           hs_waiting_ack_{false};
   uint8_t        hs_seq_{0x01};        // dedicated seq counter for handshake frames
 
-  // Last [0C 0C] heartbeat payload received from indoor — echoed back verbatim
-  std::vector<uint8_t> last_heartbeat_payload_;
-
   // ── Unit state ────────────────────────────────────────────────────────────
   bool    power_{false};
   uint8_t mode_{MODE_COOL};

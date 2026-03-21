@@ -507,37 +507,29 @@ void AcController::handle_indoor_frame(const std::vector<uint8_t> &frame) {
     }
 
     if (p0 == 0x0C && p1 == 0x0C) {
-      // [0C 0C] heartbeat — save payload and echo it back verbatim
-      last_heartbeat_payload_.assign(payload, payload + plen);
-      ESP_LOGD(TAG, "RX 0C 0C heartbeat — echoing back");
+      // [0C 0C] heartbeat — respond with sensor poll request.
+      // The real WiFi module sends [80 0C 02 64 FF FF FF C0] rather than just
+      // [80 0C]. The extra bytes are a TLV read request (bank=0x02, reg=0x64)
+      // which causes the indoor unit to reply with a full sensor data frame
+      // including reg 0x60 (outdoor coil), reg 0x65 (indoor coil), reg 0x64
+      // etc. Without these bytes the indoor sends no sensor data at all.
+      ESP_LOGV(TAG, "RX 0C 0C heartbeat — sending sensor poll");
 
-      // Build response: [80 0C] + remainder of received payload
-      std::vector<uint8_t> resp_payload;
-      resp_payload.push_back(0x80);
-      resp_payload.push_back(0x0C);
-      if (plen > 2)
-        resp_payload.insert(resp_payload.end(), payload + 2, payload + plen);
-
-      uint8_t resp_len = (uint8_t)(10 + resp_payload.size());
-      std::vector<uint8_t> resp_frame;
-      resp_frame.push_back(FRAME_HEADER);
-      resp_frame.push_back(BUS_ID);
-      resp_frame.push_back(DEV_HEARTBEAT);
-      resp_frame.push_back(TYPE_ACK);
-      resp_frame.push_back(0x00);
-      resp_frame.push_back(seq);
-      resp_frame.push_back(0x00);
-      resp_frame.push_back(resp_len);
-      resp_frame.push_back(0x00);
-      resp_frame.push_back(0x00);
-      for (auto b : resp_payload) resp_frame.push_back(b);
-
-      std::vector<uint8_t> ci(resp_frame.begin(), resp_frame.begin() + 8);
-      ci.insert(ci.end(), resp_payload.begin(), resp_payload.end());
-      uint16_t crc = crc16_xmodem(ci.data(), ci.size());
+      static const uint8_t POLL_PAYLOAD[8] = {0x80, 0x0C, 0x02, 0x64, 0xFF, 0xFF, 0xFF, 0xC0};
+      uint8_t resp_frame[18];
+      resp_frame[0] = FRAME_HEADER; resp_frame[1] = BUS_ID;
+      resp_frame[2] = DEV_HEARTBEAT; resp_frame[3] = TYPE_ACK;
+      resp_frame[4] = 0x00; resp_frame[5] = seq;
+      resp_frame[6] = 0x00; resp_frame[7] = 18;
+      resp_frame[8] = 0x00; resp_frame[9] = 0x00;
+      for (int i = 0; i < 8; i++) resp_frame[10+i] = POLL_PAYLOAD[i];
+      uint8_t ci[16] = {resp_frame[0],resp_frame[1],resp_frame[2],resp_frame[3],
+                        resp_frame[4],resp_frame[5],resp_frame[6],resp_frame[7],
+                        0x80,0x0C,0x02,0x64,0xFF,0xFF,0xFF,0xC0};
+      uint16_t crc = crc16_xmodem(ci, 16);
       resp_frame[8] = (crc >> 8) & 0xFF;
       resp_frame[9] = crc & 0xFF;
-      write_array(resp_frame.data(), resp_frame.size());
+      write_array(resp_frame, 18);
       return;
     }
 
@@ -577,7 +569,10 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
     const TlvEntry &e = entries[i];
 
     if (is_sensor_scan) {
-      if (e.reg == SENSOR_ROOM_TEMP && e.bank == 0x00) {
+      if (e.bank != 0x00) { continue; }
+      if (e.reg == SENSOR_ROOM_TEMP) {
+        // reg 0x0D — room temperature in °F
+        // Only reported during active operation; 0 = not available
         float f = (float) e.value;
         if (f > 32.0f && f < 120.0f) {
           room_temp_f_ = f;
@@ -585,7 +580,13 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
           if (room_temp_sensor_) room_temp_sensor_->publish_state(f);
           changed = true;
         }
+      } else if (e.reg == REG_COMP_FREQ) {
+        // reg 0x09 — pipe/refrigerant temperature in °F (also appears in scan frames)
+        comp_freq_ = (uint8_t) e.value;
+        if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_freq_);
       }
+      // All other sensor scan registers are informational only (motor positions,
+      // refrigerant pressures etc.) — no sensor exposed for them yet.
       continue;
     }
 
@@ -923,6 +924,10 @@ void AcController::setup() {
 }
 
 void AcController::loop() {
+  // Feed the watchdog — on ESP8266 the single-core architecture means
+  // the API task can miss keepalive pings if loop() is too busy.
+  App.feed_wdt();
+
   // Drain UART RX
   while (available()) {
     uint8_t b; read_byte(&b);
