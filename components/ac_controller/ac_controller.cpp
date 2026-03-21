@@ -1,6 +1,7 @@
 #include "ac_controller.h"
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/application.h"
 
 namespace esphome {
 namespace ac_controller {
