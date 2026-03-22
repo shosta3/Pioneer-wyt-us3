@@ -28,9 +28,9 @@ SWITCH_TYPES = {
 
 # ── Config keys ───────────────────────────────────────────────────────────────
 CONF_ROOM_TEMP_SENSOR    = "room_temperature"
+CONF_INDOOR_COIL_SENSOR  = "indoor_coil_temperature"
 CONF_OUTDOOR_COIL_SENSOR = "outdoor_coil_temperature"
-CONF_OUTDOOR_FAN_SENSOR  = "outdoor_fan_speed"
-CONF_COMP_FREQ_SENSOR    = "pipe_temperature"
+CONF_COMP_FREQ_SENSOR    = "compressor_frequency"
 CONF_FAN_RPM_SENSOR      = "fan_rpm_percent"
 CONF_FAN_SELECT          = "fan_speed"
 CONF_V_SWING_SELECT      = "v_swing"
@@ -76,30 +76,11 @@ def _temp_c_sensor():
         state_class="measurement",
     )
 
-def _pipe_temp_sensor():
-    # reg 0x09 — refrigerant pipe/discharge temperature in °F
-    return sensor.sensor_schema(
-        unit_of_measurement="°F",
-        icon="mdi:pipe",
-        accuracy_decimals=0,
-        state_class="measurement",
-    )
-
-def _outdoor_fan_sensor():
-    # reg 0x65 — outdoor fan speed in tenths (unitless index)
-    return sensor.sensor_schema(
-        unit_of_measurement="",
-        icon="mdi:fan",
-        accuracy_decimals=1,
-        state_class="measurement",
-    )
-
 def _freq_sensor():
-    # kept for compressor Hz if wired separately in future
     return sensor.sensor_schema(
         unit_of_measurement="Hz",
-        icon="mdi:sine-wave",
-        accuracy_decimals=1,
+        icon="mdi:fan",
+        accuracy_decimals=0,
         state_class="measurement",
     )
 
@@ -129,9 +110,9 @@ CONFIG_SCHEMA = cv.All(
 
         # Optional sensors
         cv.Optional(CONF_ROOM_TEMP_SENSOR):    _temp_f_sensor(),
-        cv.Optional(CONF_OUTDOOR_COIL_SENSOR): _temp_c_sensor(),
-        cv.Optional(CONF_OUTDOOR_FAN_SENSOR):  _outdoor_fan_sensor(),
-        cv.Optional(CONF_COMP_FREQ_SENSOR):    _pipe_temp_sensor(),
+        cv.Optional(CONF_INDOOR_COIL_SENSOR):  _temp_c_sensor(),
+        cv.Optional(CONF_OUTDOOR_COIL_SENSOR): _temp_f_sensor(),
+        cv.Optional(CONF_COMP_FREQ_SENSOR):    _freq_sensor(),
         cv.Optional(CONF_FAN_RPM_SENSOR):      _pct_sensor(),
 
         # Optional fan speed select (all 8 levels)
@@ -165,13 +146,13 @@ async def to_code(config):
         sens = await sensor.new_sensor(config[CONF_ROOM_TEMP_SENSOR])
         cg.add(var.set_room_temp_sensor(sens))
 
+    if CONF_INDOOR_COIL_SENSOR in config:
+        sens = await sensor.new_sensor(config[CONF_INDOOR_COIL_SENSOR])
+        cg.add(var.set_indoor_coil_sensor(sens))
+
     if CONF_OUTDOOR_COIL_SENSOR in config:
         sens = await sensor.new_sensor(config[CONF_OUTDOOR_COIL_SENSOR])
         cg.add(var.set_outdoor_coil_sensor(sens))
-
-    if CONF_OUTDOOR_FAN_SENSOR in config:
-        sens = await sensor.new_sensor(config[CONF_OUTDOOR_FAN_SENSOR])
-        cg.add(var.set_outdoor_fan_sensor(sens))
 
     if CONF_COMP_FREQ_SENSOR in config:
         sens = await sensor.new_sensor(config[CONF_COMP_FREQ_SENSOR])

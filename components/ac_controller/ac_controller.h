@@ -38,16 +38,14 @@ static const uint8_t REG_SET_TEMP      = 0x27;  // bank 0x02, 4-byte, °F
 static const uint8_t REG_STATUS_A      = 0x02;
 static const uint8_t REG_STATUS_B      = 0x03;
 static const uint8_t REG_COMP_FREQ     = 0x09;
-static const uint8_t REG_OUTDOOR_COIL  = 0x60;  // special 4-byte, tenths of °C (÷10 = °C)
-static const uint8_t REG_COMP_LOAD     = 0x64;  // special 4-byte, tenths of Hz (÷10 = compressor Hz)
-static const uint8_t REG_OUTDOOR_FAN   = 0x65;  // special 4-byte, outdoor fan speed (tenths)
-static const uint8_t REG_FAN_RPM       = 0x72;  // special 4-byte, indoor fan %
+static const uint8_t REG_OUTDOOR_COIL  = 0x60;  // special 4-byte, tenths °C signed
+static const uint8_t REG_INDOOR_COIL   = 0x65;  // special 4-byte, °F
+static const uint8_t REG_FAN_RPM       = 0x72;  // special 4-byte, %
 static const uint8_t REG_FAN_AUTO_MODE = 0x73;
 static const uint8_t REG_ECO           = 0xDF;
 static const uint8_t REG_RUN_STATE     = 0x38;
 
-// NOTE: 0x0D is H_SWING_MOTOR (position feedback) — NOT a room temperature sensor.
-// Room temperature comes from the special [0x01][temp_F][0x01] trailer in state frames.
+static const uint8_t SENSOR_ROOM_TEMP  = 0x0D;
 static const uint8_t REG_SENSOR_MARKER = 0x5C;
 
 // Room temperature is sent as a special 3-byte trailer after the setpoint TLV:
@@ -198,11 +196,11 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   static const std::string &fan_speed_to_custom_str(uint8_t speed);
 
   // Sub-component setters
-  void set_room_temp_sensor(sensor::Sensor *s)     { room_temp_sensor_    = s; }
-  void set_outdoor_coil_sensor(sensor::Sensor *s)  { outdoor_coil_sensor_ = s; }
-  void set_outdoor_fan_sensor(sensor::Sensor *s)   { outdoor_fan_sensor_  = s; }
-  void set_comp_freq_sensor(sensor::Sensor *s)     { comp_freq_sensor_    = s; }
-  void set_fan_rpm_sensor(sensor::Sensor *s)       { fan_rpm_sensor_      = s; }
+  void set_room_temp_sensor(sensor::Sensor *s)    { room_temp_sensor_    = s; }
+  void set_indoor_coil_sensor(sensor::Sensor *s)  { indoor_coil_sensor_  = s; }
+  void set_outdoor_coil_sensor(sensor::Sensor *s) { outdoor_coil_sensor_ = s; }
+  void set_comp_freq_sensor(sensor::Sensor *s)    { comp_freq_sensor_    = s; }
+  void set_fan_rpm_sensor(sensor::Sensor *s)      { fan_rpm_sensor_      = s; }
   void set_v_swing_select(AcSwingSelect *s)       { v_swing_select_      = s; }
   void set_h_swing_select(AcSwingSelect *s)       { h_swing_select_      = s; }
   void set_eco_switch(AcSwitch *s)                { eco_switch_          = s; }
@@ -285,9 +283,9 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   uint8_t sleep_mode_{0};
 
   float   room_temp_f_{0.0f};
+  float   indoor_coil_f_{0.0f};
   float   outdoor_coil_c_{0.0f};
-  float   outdoor_fan_spd_{0.0f};
-  float   comp_hz_{0.0f};
+  uint8_t comp_freq_{0};
   uint8_t fan_rpm_pct_{0};
 
   bool    state_received_{false};
@@ -297,8 +295,8 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
 
   // ── Sub-components ────────────────────────────────────────────────────────
   sensor::Sensor  *room_temp_sensor_{nullptr};
+  sensor::Sensor  *indoor_coil_sensor_{nullptr};
   sensor::Sensor  *outdoor_coil_sensor_{nullptr};
-  sensor::Sensor  *outdoor_fan_sensor_{nullptr};
   sensor::Sensor  *comp_freq_sensor_{nullptr};
   sensor::Sensor  *fan_rpm_sensor_{nullptr};
   AcSwingSelect   *v_swing_select_{nullptr};
