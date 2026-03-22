@@ -619,16 +619,10 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
     const TlvEntry &e = entries[i];
 
     if (is_sensor_scan) {
-      // Standalone sensor scan frame [00 5C 00 00 <reg> <val>] — 18 bytes total.
-      // The second register after 0x5C is a refrigerant circuit sensor cycling
-      // through the scan list (0x09, 0x0A, 0x0B, 0x0C, 0x0D etc).
-      // reg 0x09 = pipe temperature in °F — publish to comp_freq_sensor
-      if (e.bank == 0x00 && e.reg == REG_COMP_FREQ) {
-        comp_freq_ = (uint8_t) e.value;
-        if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_freq_);
-      }
-      // Skip all other entries in pure sensor scan frames — they are motor
-      // position feedback registers (0x0C, 0x0D, 0x0A, 0x0B) not temperatures.
+      // Standalone sensor scan frame [00 5C 00 00 <reg> <val>].
+      // The second register cycles through thermistor ADC readings (0x09-0x11 etc).
+      // reg 0x09 paired with reg 0x03 in status frames = pipe/discharge temp in °F.
+      // In scan frames these are raw ADC counts — not published.
       continue;
     }
 
