@@ -259,26 +259,6 @@ void AcController::run_handshake() {
           ESP_LOGD(TAG, "HS announce_1: no ACK but advancing (indoor may not reply)");
         }
         hs_waiting_ack_ = false;
-        // Real controller sends fault register frame here before identity query.
-        // [0C 0C 00 FA 00 07 3B 3B 3B 3B 3B 3B 3B] = FaultA=0, no-fault payload.
-        // Send as a normal CMD to dev=01.
-        {
-          std::vector<uint8_t> fa_pl = {0x0C,0x0C,0x00,0xFA,0x00,0x07,0x3B,0x3B,0x3B,0x3B,0x3B,0x3B,0x3B};
-          uint8_t fa_len = (uint8_t)(10 + fa_pl.size());
-          std::vector<uint8_t> fa_fr;
-          fa_fr.push_back(FRAME_HEADER); fa_fr.push_back(BUS_ID);
-          fa_fr.push_back(DEV_NORMAL);   fa_fr.push_back(TYPE_CMD);
-          fa_fr.push_back(hs_seq_);      fa_fr.push_back(0x00);
-          fa_fr.push_back(0x00);         fa_fr.push_back(fa_len);
-          fa_fr.push_back(0x00);         fa_fr.push_back(0x00);
-          for (auto b : fa_pl) fa_fr.push_back(b);
-          std::vector<uint8_t> faci(fa_fr.begin(), fa_fr.begin() + 8);
-          faci.insert(faci.end(), fa_pl.begin(), fa_pl.end());
-          uint16_t facrc = crc16_xmodem(faci.data(), faci.size());
-          fa_fr[8] = (facrc >> 8) & 0xFF; fa_fr[9] = facrc & 0xFF;
-          send_frame(fa_fr);
-          hs_seq_ = (hs_seq_ == 0xFF) ? 0x01 : hs_seq_ + 1;
-        }
         send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
         hs_state_ = HS_IDENTITY_2;
       }

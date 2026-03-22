@@ -164,8 +164,11 @@ async def to_code(config):
 
     # ── Vertical swing select ─────────────────────────────────────────────────
     if CONF_FAN_SELECT in config:
-        sel = await select.new_select(config[CONF_FAN_SELECT], options=FAN_SPEED_OPTIONS)
-        await cg.register_component(sel, config[CONF_FAN_SELECT])
+        conf = config[CONF_FAN_SELECT]
+        sel = cg.new_Pvariable(conf[CONF_ID])
+        await cg.register_component(sel, conf)
+        cg.add(sel.set_name(conf[CONF_NAME]))
+        cg.add(sel.traits.set_options(FAN_SPEED_OPTIONS))
         cg.add(sel.set_parent(var))
         cg.add(var.set_fan_select(sel))
 
