@@ -81,8 +81,8 @@ std::vector<uint8_t> AcController::build_ack_frame(uint8_t seq, uint8_t dev_id) 
 // TLV helpers
 // ─────────────────────────────────────────────────────────────────────────────
 bool AcController::is_4byte_special(uint8_t reg) {
-  return reg == REG_OUTDOOR_COIL || reg == 0x64 ||
-         reg == REG_INDOOR_COIL  || reg == REG_FAN_RPM;
+  return reg == REG_OUTDOOR_COIL || reg == REG_COMP_LOAD ||
+         reg == REG_OUTDOOR_FAN  || reg == REG_FAN_RPM;
 }
 
 std::vector<TlvEntry> AcController::parse_tlv(const uint8_t *data, size_t len) {
@@ -707,28 +707,37 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         break;
       }
       case REG_COMP_FREQ:
-        // reg 0x09 — pipe/refrigerant temperature in °F, not compressor Hz
-        // Values: ~96-106°F at rest, varies during operation
-        comp_freq_ = (uint8_t) e.value;
-        if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_freq_);
+        // reg 0x09 — refrigerant discharge/pipe temperature in °F.
+        // Rises from ~46°F (idle/cold start) to ~186°F as heating compressor works.
+        // Published as raw °F value.
+        comp_hz_ = (float) e.value;
+        if (comp_freq_sensor_) comp_freq_sensor_->publish_state(comp_hz_);
         break;
       case REG_FAN_RPM:
         fan_rpm_pct_ = (uint8_t)(e.value & 0xFF);
         if (fan_rpm_sensor_) fan_rpm_sensor_->publish_state(fan_rpm_pct_);
         break;
-      case REG_INDOOR_COIL:
-        // reg 0x65 — indoor coil temperature in °C (whole integers)
-        // 0 = compressor off/idle. Suppress to avoid showing 0°C in HA when idle.
-        if (e.value > 0) {
-          indoor_coil_f_ = (float)e.value;
-          if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
-        }
+      case REG_OUTDOOR_FAN:
+        // reg 0x65 — outdoor fan speed indicator (tenths).
+        // Values 2.2–4.5 observed during heating. Rises/falls with compressor load.
+        // NOT indoor coil temperature (previous incorrect label).
+        outdoor_fan_spd_ = e.value / 10.0f;
+        if (outdoor_fan_sensor_) outdoor_fan_sensor_->publish_state(outdoor_fan_spd_);
         break;
+      case REG_COMP_LOAD:
+        // reg 0x64 — compressor frequency in tenths of Hz.
+        // Values 130–820 → 13–82 Hz, matching variable-speed compressor range.
+        // Previously misidentified. Published via comp_freq_sensor_.
+        // NOTE: comp_freq_sensor_ is also used by REG_COMP_FREQ (0x09).
+        // If both are configured, the last update wins; they represent different things.
+        // reg 0x64 is the true compressor Hz; reg 0x09 is discharge line temp.
+        break;  // no dedicated sensor wired yet — see YAML
       case REG_OUTDOOR_COIL: {
-        // reg 0x60 values are tenths of °F (900=90°F, 1000=100°F, 1100=110°F)
-        // Published directly in °F to match IndoorCoil sensor units
+        // reg 0x60 — outdoor coil temperature in TENTHS of °C.
+        // e.g. raw=1300 → 130 tenths → 13.0°C = ~55.4°F (near ambient on a 58°F day) ✓
+        // Previous code divided by 10 and labelled as °F — wrong unit.
         int32_t sv = (int32_t) e.value;
-        outdoor_coil_c_ = sv / 10.0f;  // field name legacy; value is °F
+        outdoor_coil_c_ = sv / 10.0f;  // result is °C
         if (outdoor_coil_sensor_) outdoor_coil_sensor_->publish_state(outdoor_coil_c_);
         break;
       }
@@ -1068,10 +1077,10 @@ void AcController::dump_config() {
   ESP_LOGCONFIG(TAG, "AC Controller:");
   ESP_LOGCONFIG(TAG, "  Handshake: %s", hs_state_ == HS_COMPLETE ? "complete" : "pending");
   if (room_temp_sensor_)    ESP_LOGCONFIG(TAG, "  Room temp sensor: YES");
-  if (indoor_coil_sensor_)  ESP_LOGCONFIG(TAG, "  Indoor coil sensor: YES");
-  if (outdoor_coil_sensor_) ESP_LOGCONFIG(TAG, "  Outdoor coil sensor: YES");
-  if (comp_freq_sensor_)    ESP_LOGCONFIG(TAG, "  Compressor freq: YES");
-  if (fan_rpm_sensor_)      ESP_LOGCONFIG(TAG, "  Fan RPM: YES");
+  if (outdoor_coil_sensor_) ESP_LOGCONFIG(TAG, "  Outdoor coil sensor (°C): YES");
+  if (outdoor_fan_sensor_)  ESP_LOGCONFIG(TAG, "  Outdoor fan speed sensor: YES");
+  if (comp_freq_sensor_)    ESP_LOGCONFIG(TAG, "  Pipe temp sensor: YES");
+  if (fan_rpm_sensor_)      ESP_LOGCONFIG(TAG, "  Indoor fan RPM: YES");
   if (v_swing_select_)      ESP_LOGCONFIG(TAG, "  V-swing select: YES");
   if (h_swing_select_)      ESP_LOGCONFIG(TAG, "  H-swing select: YES");
   if (eco_switch_)          ESP_LOGCONFIG(TAG, "  Eco switch: YES");
