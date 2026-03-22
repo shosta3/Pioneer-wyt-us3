@@ -259,6 +259,26 @@ void AcController::run_handshake() {
           ESP_LOGD(TAG, "HS announce_1: no ACK but advancing (indoor may not reply)");
         }
         hs_waiting_ack_ = false;
+        // Real controller sends fault register frame here before identity query.
+        // [0C 0C 00 FA 00 07 3B 3B 3B 3B 3B 3B 3B] = FaultA=0, no-fault payload.
+        // Send as a normal CMD to dev=01.
+        {
+          std::vector<uint8_t> fa_pl = {0x0C,0x0C,0x00,0xFA,0x00,0x07,0x3B,0x3B,0x3B,0x3B,0x3B,0x3B,0x3B};
+          uint8_t fa_len = (uint8_t)(10 + fa_pl.size());
+          std::vector<uint8_t> fa_fr;
+          fa_fr.push_back(FRAME_HEADER); fa_fr.push_back(BUS_ID);
+          fa_fr.push_back(DEV_NORMAL);   fa_fr.push_back(TYPE_CMD);
+          fa_fr.push_back(hs_seq_);      fa_fr.push_back(0x00);
+          fa_fr.push_back(0x00);         fa_fr.push_back(fa_len);
+          fa_fr.push_back(0x00);         fa_fr.push_back(0x00);
+          for (auto b : fa_pl) fa_fr.push_back(b);
+          std::vector<uint8_t> faci(fa_fr.begin(), fa_fr.begin() + 8);
+          faci.insert(faci.end(), fa_pl.begin(), fa_pl.end());
+          uint16_t facrc = crc16_xmodem(faci.data(), faci.size());
+          fa_fr[8] = (facrc >> 8) & 0xFF; fa_fr[9] = facrc & 0xFF;
+          send_frame(fa_fr);
+          hs_seq_ = (hs_seq_ == 0xFF) ? 0x01 : hs_seq_ + 1;
+        }
         send_hs({0x00, 0x00, 0x01}, DEV_HEARTBEAT);
         hs_state_ = HS_IDENTITY_2;
       }
@@ -637,7 +657,22 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         }
         break;
       case REG_FAN_SPEED:
-        fan_speed_ = (uint8_t) e.value; changed = true; break;
+        fan_speed_ = (uint8_t) e.value;
+        if (fan_select_) {
+          const char *fs = "Auto";
+          switch (fan_speed_) {
+            case FAN_MUTE:     fs = "Mute";     break;
+            case FAN_LOW:      fs = "Low";      break;
+            case FAN_MID_LOW:  fs = "Mid-Low";  break;
+            case FAN_MID:      fs = "Mid";      break;
+            case FAN_MID_HIGH: fs = "Mid-High"; break;
+            case FAN_HIGH:     fs = "High";     break;
+            case FAN_STRONG:   fs = "Strong";   break;
+            default:           fs = "Auto";     break;
+          }
+          fan_select_->publish_state(fs);
+        }
+        changed = true; break;
       case REG_FAN_AUTO_MODE:
         fan_auto_ = (e.value != 0); changed = true; break;
       case REG_V_SWING:
@@ -685,9 +720,11 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         break;
       case REG_INDOOR_COIL:
         // reg 0x65 — indoor coil temperature in °C (whole integers)
-        // 0 = compressor off / coil at ambient. Publish all values including 0.
-        indoor_coil_f_ = (float)(int32_t)e.value;  // signed: handle near-zero values
-        if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
+        // 0 = compressor off/idle. Suppress to avoid showing 0°C in HA when idle.
+        if (e.value > 0) {
+          indoor_coil_f_ = (float)e.value;
+          if (indoor_coil_sensor_) indoor_coil_sensor_->publish_state(indoor_coil_f_);
+        }
         break;
       case REG_OUTDOOR_COIL: {
         // reg 0x60 values are tenths of °F (900=90°F, 1000=100°F, 1100=110°F)
@@ -1051,6 +1088,26 @@ void AcSwitch::write_state(bool state) {
   }
   parent->send_register(0x00, reg, state ? 1 : 0);
   publish_state(state);
+}
+
+void AcFanSelect::control(const std::string &value) {
+  AcController *parent = (AcController *) parent_;
+  uint8_t speed = FAN_AUTO;
+  bool is_auto = false;
+  if      (value == "Auto")     { speed = FAN_AUTO;     is_auto = true; }
+  else if (value == "Mute")     { speed = FAN_MUTE;     }
+  else if (value == "Low")      { speed = FAN_LOW;      }
+  else if (value == "Mid-Low")  { speed = FAN_MID_LOW;  }
+  else if (value == "Mid")      { speed = FAN_MID;      }
+  else if (value == "Mid-High") { speed = FAN_MID_HIGH; }
+  else if (value == "High")     { speed = FAN_HIGH;     }
+  else if (value == "Strong")   { speed = FAN_STRONG;   }
+  std::vector<TlvEntry> entries;
+  TlvEntry e1; e1.bank=0x00; e1.reg=REG_FAN_SPEED;     e1.value=speed;       e1.size=1;
+  TlvEntry e2; e2.bank=0x00; e2.reg=REG_FAN_AUTO_MODE; e2.value=(is_auto?1:0); e2.size=1;
+  entries.push_back(e1); entries.push_back(e2);
+  parent->send_registers(entries);
+  publish_state(value);
 }
 
 void AcSleepSelect::control(const std::string &value) {

@@ -156,6 +156,15 @@ class AcSwitch : public switch_::Switch, public Component {
   void      *parent_{nullptr};
 };
 
+// ── Fan speed select (all 8 levels) ──────────────────────────────────────────
+class AcFanSelect : public select::Select, public Component {
+ public:
+  void set_parent(void *p) { parent_ = p; }
+  void control(const std::string &value) override;
+ protected:
+  void *parent_{nullptr};
+};
+
 // ── Sleep mode select ─────────────────────────────────────────────────────────
 class AcSleepSelect : public select::Select, public Component {
  public:
@@ -187,6 +196,7 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   void set_eco_switch(AcSwitch *s)                { eco_switch_          = s; }
   void set_display_switch(AcSwitch *s)            { display_switch_      = s; }
   void set_beep_switch(AcSwitch *s)               { beep_switch_         = s; }
+  void set_fan_select(AcFanSelect *s)              { fan_select_          = s; }
   void set_sleep_select(AcSleepSelect *s)         { sleep_select_        = s; }
 
   // Called by sub-components
@@ -284,6 +294,7 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
   AcSwitch        *eco_switch_{nullptr};
   AcSwitch        *display_switch_{nullptr};
   AcSwitch        *beep_switch_{nullptr};
+  AcFanSelect     *fan_select_{nullptr};
   AcSleepSelect   *sleep_select_{nullptr};
 };
 

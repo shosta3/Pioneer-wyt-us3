@@ -14,6 +14,7 @@ AUTO_LOAD = ["sensor", "switch", "select"]
 ac_ns = cg.esphome_ns.namespace("ac_controller")
 
 AcController  = ac_ns.class_("AcController",  climate.Climate, uart.UARTDevice, cg.Component)
+AcFanSelect   = ac_ns.class_("AcFanSelect",    select.Select,  cg.Component)
 AcSwingSelect = ac_ns.class_("AcSwingSelect",  select.Select,  cg.Component)
 AcSwitch      = ac_ns.class_("AcSwitch",       switch.Switch,  cg.Component)
 AcSleepSelect = ac_ns.class_("AcSleepSelect",  select.Select,  cg.Component)
@@ -31,12 +32,17 @@ CONF_INDOOR_COIL_SENSOR  = "indoor_coil_temperature"
 CONF_OUTDOOR_COIL_SENSOR = "outdoor_coil_temperature"
 CONF_COMP_FREQ_SENSOR    = "compressor_frequency"
 CONF_FAN_RPM_SENSOR      = "fan_rpm_percent"
+CONF_FAN_SELECT          = "fan_speed"
 CONF_V_SWING_SELECT      = "v_swing"
 CONF_H_SWING_SELECT      = "h_swing"
 CONF_ECO_SWITCH          = "eco"
 CONF_DISPLAY_SWITCH      = "display"
 CONF_BEEP_SWITCH         = "beep"
 CONF_SLEEP_SELECT        = "sleep_mode"
+
+FAN_SPEED_OPTIONS = [
+    "Auto", "Mute", "Low", "Mid-Low", "Mid", "Mid-High", "High", "Strong",
+]
 
 # ── Swing / sleep option lists ────────────────────────────────────────────────
 V_SWING_OPTIONS = [
@@ -109,6 +115,9 @@ CONFIG_SCHEMA = cv.All(
         cv.Optional(CONF_COMP_FREQ_SENSOR):    _freq_sensor(),
         cv.Optional(CONF_FAN_RPM_SENSOR):      _pct_sensor(),
 
+        # Optional fan speed select (all 8 levels)
+        cv.Optional(CONF_FAN_SELECT): _named_entity_schema(AcFanSelect),
+
         # Optional swing selects
         cv.Optional(CONF_V_SWING_SELECT): _named_entity_schema(AcSwingSelect),
         cv.Optional(CONF_H_SWING_SELECT): _named_entity_schema(AcSwingSelect),
@@ -154,6 +163,12 @@ async def to_code(config):
         cg.add(var.set_fan_rpm_sensor(sens))
 
     # ── Vertical swing select ─────────────────────────────────────────────────
+    if CONF_FAN_SELECT in config:
+        sel = await select.new_select(config[CONF_FAN_SELECT], options=FAN_SPEED_OPTIONS)
+        await cg.register_component(sel, config[CONF_FAN_SELECT])
+        cg.add(sel.set_parent(var))
+        cg.add(var.set_fan_select(sel))
+
     if CONF_V_SWING_SELECT in config:
         conf = config[CONF_V_SWING_SELECT]
         sel = cg.new_Pvariable(conf[CONF_ID])
