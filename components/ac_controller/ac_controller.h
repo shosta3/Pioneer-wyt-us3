@@ -48,6 +48,12 @@ static const uint8_t REG_RUN_STATE     = 0x38;
 static const uint8_t SENSOR_ROOM_TEMP  = 0x0D;
 static const uint8_t REG_SENSOR_MARKER = 0x5C;
 
+// Room temperature is sent as a special 3-byte trailer after the setpoint TLV:
+// [0x01][temp_F][0x01] — the middle byte is the current room temperature in °F.
+// This does NOT follow standard bank/reg/val encoding.
+static const uint8_t ROOM_TEMP_TRAILER_BANK = 0x01;
+static const uint8_t ROOM_TEMP_TRAILER_END  = 0x01;
+
 // ── Protocol constants ────────────────────────────────────────────────────────
 static const uint8_t FRAME_HEADER     = 0xA5;
 static const uint8_t BUS_ID           = 0x01;
@@ -184,6 +190,10 @@ class AcController : public climate::Climate, public uart::UARTDevice, public Co
 
   climate::ClimateTraits traits() override;
   void control(const climate::ClimateCall &call) override;
+
+  // Custom fan mode string → speed mapping helper
+  static uint8_t custom_fan_str_to_speed(const std::string &value);
+  static const std::string &fan_speed_to_custom_str(uint8_t speed);
 
   // Sub-component setters
   void set_room_temp_sensor(sensor::Sensor *s)    { room_temp_sensor_    = s; }

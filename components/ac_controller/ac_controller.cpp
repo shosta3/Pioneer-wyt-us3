@@ -95,6 +95,19 @@ std::vector<TlvEntry> AcController::parse_tlv(const uint8_t *data, size_t len) {
     e.bank = bank;
     e.reg  = reg;
 
+    // Special case: room temperature trailer [0x01][temp_F][0x01]
+    // Appears at end of full state dump after the setpoint TLV entry.
+    // The middle byte is current room temperature in °F.
+    if (bank == ROOM_TEMP_TRAILER_BANK && i + 2 < len && data[i + 2] == ROOM_TEMP_TRAILER_END) {
+      // [0x01][temp_F][0x01] — reg byte IS the temperature value
+      e.reg   = 0x48;  // virtual room temp register
+      e.value = reg;   // reg byte is actually the room temp in °F
+      e.size  = 1;
+      entries.push_back(e);
+      i += 3;
+      continue;
+    }
+
     if (is_4byte_special(reg)) {
       if (i + 6 > len) break;
       e.value = ((uint32_t) data[i+2] << 24) | ((uint32_t) data[i+3] << 16) |
@@ -655,6 +668,11 @@ void AcController::apply_tlv_entries(const std::vector<TlvEntry> &entries,
         changed = true; break;
       case REG_FAN_AUTO_MODE:
         fan_auto_ = (e.value != 0); changed = true; break;
+      case 0x48:  // Room temperature — special 3-byte trailer [0x01][temp_F][0x01]
+        room_temp_f_ = (float) e.value;
+        current_temperature = (room_temp_f_ - 32.0f) / 1.8f;
+        if (room_temp_sensor_) room_temp_sensor_->publish_state(room_temp_f_);
+        changed = true; break;
       case REG_V_SWING:
         v_swing_ = (uint8_t) e.value;
         if (v_swing_select_)
@@ -742,16 +760,33 @@ void AcController::publish_climate_state() {
 
   if (fan_auto_) {
     fan_mode = climate::CLIMATE_FAN_AUTO;
+    custom_fan_mode.reset();
   } else {
     switch (fan_speed_) {
       case FAN_MUTE:
-      case FAN_LOW:     fan_mode = climate::CLIMATE_FAN_LOW;    break;
+        fan_mode.reset();
+        custom_fan_mode = std::string("Mute");     break;
+      case FAN_LOW:
+        fan_mode = climate::CLIMATE_FAN_LOW;
+        custom_fan_mode.reset();                   break;
       case FAN_MID_LOW:
-      case FAN_MID:     fan_mode = climate::CLIMATE_FAN_MEDIUM; break;
+        fan_mode.reset();
+        custom_fan_mode = std::string("Mid-Low");  break;
+      case FAN_MID:
+        fan_mode.reset();
+        custom_fan_mode = std::string("Mid");      break;
       case FAN_MID_HIGH:
+        fan_mode.reset();
+        custom_fan_mode = std::string("Mid-High"); break;
       case FAN_HIGH:
-      case FAN_STRONG:  fan_mode = climate::CLIMATE_FAN_HIGH;   break;
-      default:          fan_mode = climate::CLIMATE_FAN_AUTO;   break;
+        fan_mode = climate::CLIMATE_FAN_HIGH;
+        custom_fan_mode.reset();                   break;
+      case FAN_STRONG:
+        fan_mode.reset();
+        custom_fan_mode = std::string("Strong");   break;
+      default:
+        fan_mode = climate::CLIMATE_FAN_AUTO;
+        custom_fan_mode.reset();                   break;
     }
   }
 
@@ -877,6 +912,23 @@ void AcController::control(const climate::ClimateCall &call) {
     }
   }
 
+  // Handle custom fan modes (Mute, Mid-Low, Mid, Mid-High, Strong)
+  if (call.get_custom_fan_mode().has_value()) {
+    const std::string &cfm = *call.get_custom_fan_mode();
+    uint8_t nf = fan_speed_;
+    if      (cfm == "Mute")     nf = FAN_MUTE;
+    else if (cfm == "Mid-Low")  nf = FAN_MID_LOW;
+    else if (cfm == "Mid")      nf = FAN_MID;
+    else if (cfm == "Mid-High") nf = FAN_MID_HIGH;
+    else if (cfm == "Strong")   nf = FAN_STRONG;
+    if (nf != fan_speed_ || fan_auto_) {
+      TlvEntry e1; e1.bank=0x00; e1.reg=REG_FAN_SPEED;     e1.value=nf;  e1.size=1;
+      TlvEntry e2; e2.bank=0x00; e2.reg=REG_FAN_AUTO_MODE; e2.value=0;   e2.size=1;
+      entries.push_back(e1); entries.push_back(e2);
+      fan_speed_ = nf; fan_auto_ = false;
+    }
+  }
+
   if (call.get_swing_mode().has_value()) {
     uint8_t nv = v_swing_, nh = h_swing_;
     switch (*call.get_swing_mode()) {
@@ -918,12 +970,15 @@ climate::ClimateTraits AcController::traits() {
     climate::CLIMATE_MODE_FAN_ONLY,
     climate::CLIMATE_MODE_AUTO,
   });
+  // Standard HA fan modes (shown in climate card)
   t.set_supported_fan_modes({
     climate::CLIMATE_FAN_AUTO,
     climate::CLIMATE_FAN_LOW,
     climate::CLIMATE_FAN_MEDIUM,
     climate::CLIMATE_FAN_HIGH,
   });
+  // Custom fan modes expose all 8 AC fan speeds (shown as additional options)
+  t.set_supported_custom_fan_modes({"Mute", "Mid-Low", "Mid", "Mid-High", "Strong"});
   t.set_supported_swing_modes({
     climate::CLIMATE_SWING_OFF,
     climate::CLIMATE_SWING_VERTICAL,
